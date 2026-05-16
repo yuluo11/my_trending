@@ -1,4 +1,4 @@
-"""Application entrypoints for analyst-runtime assembly."""
+"""Application entrypoints for analyst realization and analyst-runtime assembly."""
 
 from __future__ import annotations
 
@@ -6,22 +6,23 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from .knowledge.repository import DatasetName, KnowledgeRepository
+from .llm.client import LLMClient, LLMRunnable, ensure_llm_client
 from .services.analysts.base_agent import (
     AnalystRuntimeState,
     AnalystTask,
     BaseLangGraphAnalystAgent,
     FilePromptProvider,
-    LLMRunnable,
 )
 from .services.analysts.graph_analyst import GraphAnalystService
 from .services.analysts.market_analyst import MarketAnalystAgent, MarketAnalystService
 from .services.analysts.news_analyst import NewsAnalystAgent, NewsAnalystService
+from .services.analysts.orchestrator import AnalystOrchestrator
 from .services.analysts.sentiment_analyst import (
     SentimentAnalystAgent,
     SentimentAnalystService,
 )
 from .services.analysts.social_analyst import SocialAnalystAgent, SocialAnalystService
-from .services.analysts.tooling import AnalystToolRegistry, KnowledgeBaseSearchTool
+from .tools.analyst.tooling import AnalystToolRegistry, KnowledgeBaseSearchTool
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "services" / "analysts" / "prompts"
 DEFAULT_ANALYST_SEQUENCE = (
@@ -67,6 +68,7 @@ def build_graph_analyst_agent(
     *,
     repository: KnowledgeRepository | None = None,
     prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> BaseLangGraphAnalystAgent:
     """Assemble the first graph analyst agent."""
@@ -77,7 +79,7 @@ def build_graph_analyst_agent(
         knowledge_service=service,
         tool_registry=registry,
         prompt_provider=prompt_provider or build_prompt_provider(),
-        llm=llm,
+        llm_client=ensure_llm_client(llm_client=llm_client, llm=llm),
     )
 
 
@@ -85,6 +87,7 @@ def build_market_analyst_agent(
     *,
     repository: KnowledgeRepository | None = None,
     prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> MarketAnalystAgent:
     """Assemble the market analyst agent."""
@@ -94,7 +97,7 @@ def build_market_analyst_agent(
         service=service,
         tool_registry=registry,
         prompt_provider=prompt_provider or build_prompt_provider(),
-        llm=llm,
+        llm_client=ensure_llm_client(llm_client=llm_client, llm=llm),
     )
 
 
@@ -102,6 +105,7 @@ def build_news_analyst_agent(
     *,
     repository: KnowledgeRepository | None = None,
     prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> NewsAnalystAgent:
     """Assemble the news analyst agent."""
@@ -111,7 +115,7 @@ def build_news_analyst_agent(
         service=service,
         tool_registry=registry,
         prompt_provider=prompt_provider or build_prompt_provider(),
-        llm=llm,
+        llm_client=ensure_llm_client(llm_client=llm_client, llm=llm),
     )
 
 
@@ -119,6 +123,7 @@ def build_sentiment_analyst_agent(
     *,
     repository: KnowledgeRepository | None = None,
     prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> SentimentAnalystAgent:
     """Assemble the sentiment analyst agent."""
@@ -128,7 +133,7 @@ def build_sentiment_analyst_agent(
         service=service,
         tool_registry=registry,
         prompt_provider=prompt_provider or build_prompt_provider(),
-        llm=llm,
+        llm_client=ensure_llm_client(llm_client=llm_client, llm=llm),
     )
 
 
@@ -136,6 +141,7 @@ def build_social_analyst_agent(
     *,
     repository: KnowledgeRepository | None = None,
     prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> SocialAnalystAgent:
     """Assemble the social analyst agent."""
@@ -145,7 +151,7 @@ def build_social_analyst_agent(
         service=service,
         tool_registry=registry,
         prompt_provider=prompt_provider or build_prompt_provider(),
-        llm=llm,
+        llm_client=ensure_llm_client(llm_client=llm_client, llm=llm),
     )
 
 
@@ -153,6 +159,7 @@ def build_default_analyst_agents(
     *,
     repository: KnowledgeRepository | None = None,
     prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> dict[str, BaseLangGraphAnalystAgent]:
     """Build the default set of analyst agents used by the workflow."""
@@ -161,29 +168,55 @@ def build_default_analyst_agents(
         "market_analyst": build_market_analyst_agent(
             repository=repository,
             prompt_provider=resolved_prompt_provider,
+            llm_client=llm_client,
             llm=llm,
         ),
         "news_analyst": build_news_analyst_agent(
             repository=repository,
             prompt_provider=resolved_prompt_provider,
+            llm_client=llm_client,
             llm=llm,
         ),
         "sentiment_analyst": build_sentiment_analyst_agent(
             repository=repository,
             prompt_provider=resolved_prompt_provider,
+            llm_client=llm_client,
             llm=llm,
         ),
         "social_analyst": build_social_analyst_agent(
             repository=repository,
             prompt_provider=resolved_prompt_provider,
+            llm_client=llm_client,
             llm=llm,
         ),
         "graph_analyst": build_graph_analyst_agent(
             repository=repository,
             prompt_provider=resolved_prompt_provider,
+            llm_client=llm_client,
             llm=llm,
         ),
     }
+
+
+def build_analyst_orchestrator(
+    *,
+    repository: KnowledgeRepository | None = None,
+    prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
+    llm: LLMRunnable | None = None,
+) -> AnalystOrchestrator:
+    """Build the internal orchestrator coordinating the default analyst sequence."""
+    return AnalystOrchestrator(
+        analysts=build_default_analyst_agents(
+            repository=repository,
+            prompt_provider=prompt_provider,
+            llm_client=llm_client,
+            llm=llm,
+        ),
+        sequence=DEFAULT_ANALYST_SEQUENCE,
+        llm_client=ensure_llm_client(llm_client=llm_client, llm=llm),
+        prompts_dir=PROMPTS_DIR,
+    )
 
 
 def run_graph_analyst(
@@ -195,6 +228,7 @@ def run_graph_analyst(
     datasets: tuple[DatasetName, ...] | None = None,
     metadata_filter: dict[str, Any] | None = None,
     max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> dict[str, Any]:
     """Run the graph analyst directly without compiling a LangGraph workflow."""
@@ -207,7 +241,7 @@ def run_graph_analyst(
         metadata_filter=metadata_filter,
         max_documents=max_documents,
     )
-    agent = build_graph_analyst_agent(llm=llm)
+    agent = build_graph_analyst_agent(llm_client=llm_client, llm=llm)
     return agent.invoke(task)
 
 
@@ -220,6 +254,7 @@ def run_market_analyst(
     datasets: tuple[DatasetName, ...] | None = None,
     metadata_filter: dict[str, Any] | None = None,
     max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> dict[str, Any]:
     """Run the market analyst directly."""
@@ -232,7 +267,7 @@ def run_market_analyst(
         metadata_filter=metadata_filter,
         max_documents=max_documents,
     )
-    return build_market_analyst_agent(llm=llm).invoke(task)
+    return build_market_analyst_agent(llm_client=llm_client, llm=llm).invoke(task)
 
 
 def run_news_analyst(
@@ -244,6 +279,7 @@ def run_news_analyst(
     datasets: tuple[DatasetName, ...] | None = None,
     metadata_filter: dict[str, Any] | None = None,
     max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> dict[str, Any]:
     """Run the news analyst directly."""
@@ -256,7 +292,7 @@ def run_news_analyst(
         metadata_filter=metadata_filter,
         max_documents=max_documents,
     )
-    return build_news_analyst_agent(llm=llm).invoke(task)
+    return build_news_analyst_agent(llm_client=llm_client, llm=llm).invoke(task)
 
 
 def run_sentiment_analyst(
@@ -268,6 +304,7 @@ def run_sentiment_analyst(
     datasets: tuple[DatasetName, ...] | None = None,
     metadata_filter: dict[str, Any] | None = None,
     max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> dict[str, Any]:
     """Run the sentiment analyst directly."""
@@ -280,7 +317,7 @@ def run_sentiment_analyst(
         metadata_filter=metadata_filter,
         max_documents=max_documents,
     )
-    return build_sentiment_analyst_agent(llm=llm).invoke(task)
+    return build_sentiment_analyst_agent(llm_client=llm_client, llm=llm).invoke(task)
 
 
 def run_social_analyst(
@@ -292,6 +329,7 @@ def run_social_analyst(
     datasets: tuple[DatasetName, ...] | None = None,
     metadata_filter: dict[str, Any] | None = None,
     max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> dict[str, Any]:
     """Run the social analyst directly."""
@@ -304,13 +342,66 @@ def run_social_analyst(
         metadata_filter=metadata_filter,
         max_documents=max_documents,
     )
-    return build_social_analyst_agent(llm=llm).invoke(task)
+    return build_social_analyst_agent(llm_client=llm_client, llm=llm).invoke(task)
+
+
+def run_analyst_orchestrator(
+    *,
+    subject: str,
+    symbol: str | None = None,
+    trade_date: str | None = None,
+    extra_context: str | None = None,
+    datasets: tuple[DatasetName, ...] | None = None,
+    metadata_filter: dict[str, Any] | None = None,
+    max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
+    llm: LLMRunnable | None = None,
+) -> dict[str, Any]:
+    """Run the internal multi-analyst orchestrator and return the aggregate result."""
+    task = AnalystTask(
+        subject=subject,
+        symbol=symbol,
+        trade_date=trade_date,
+        extra_context=extra_context,
+        datasets=datasets,
+        metadata_filter=metadata_filter,
+        max_documents=max_documents,
+    )
+    orchestrator = build_analyst_orchestrator(llm_client=llm_client, llm=llm)
+    return orchestrator.run(task)
+
+
+def run_analyst_realization(
+    *,
+    subject: str,
+    symbol: str | None = None,
+    trade_date: str | None = None,
+    extra_context: str | None = None,
+    datasets: tuple[DatasetName, ...] | None = None,
+    metadata_filter: dict[str, Any] | None = None,
+    max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
+    llm: LLMRunnable | None = None,
+) -> dict[str, Any]:
+    """Run a full analyst realization and return the top-level aggregated result."""
+    return run_analyst_orchestrator(
+        subject=subject,
+        symbol=symbol,
+        trade_date=trade_date,
+        extra_context=extra_context,
+        datasets=datasets,
+        metadata_filter=metadata_filter,
+        max_documents=max_documents,
+        llm_client=llm_client,
+        llm=llm,
+    )
 
 
 def build_langgraph_workflow(
     *,
     repository: KnowledgeRepository | None = None,
     prompt_provider: FilePromptProvider | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> Any:
     """Compile the default multi-analyst workflow when optional deps are installed."""
@@ -324,6 +415,7 @@ def build_langgraph_workflow(
     agents = build_default_analyst_agents(
         repository=repository,
         prompt_provider=prompt_provider,
+        llm_client=llm_client,
         llm=llm,
     )
     workflow = StateGraph(AppRuntimeState)
@@ -348,10 +440,11 @@ def run_langgraph_workflow(
     datasets: tuple[DatasetName, ...] | None = None,
     metadata_filter: dict[str, Any] | None = None,
     max_documents: int | None = None,
+    llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
 ) -> AnalystRuntimeState:
     """Run the compiled workflow when langgraph is available."""
-    workflow = build_langgraph_workflow(llm=llm)
+    workflow = build_langgraph_workflow(llm_client=llm_client, llm=llm)
     initial_state: AnalystRuntimeState = {
         "subject": subject,
         "symbol": symbol,

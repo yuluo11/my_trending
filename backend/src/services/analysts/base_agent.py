@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
 from ...knowledge.repository import DatasetName
+from ...llm.client import LLMClient, LLMRunnable, ensure_llm_client
+from ...tools.analyst.tooling import AnalystToolRegistry, ToolCallRequest, ToolCallResult
 from .graph_analyst import KnowledgeBackedAnalystService
-from .tooling import AnalystToolRegistry, ToolCallRequest, ToolCallResult
 
 
 @dataclass(slots=True)
@@ -62,13 +62,6 @@ class PromptProvider(Protocol):
 
     def get_analyst_prompt(self, analyst_name: str) -> str:
         """Return the analyst-specific prompt body."""
-
-
-class LLMRunnable(Protocol):
-    """Minimal invocation interface for LangChain-compatible LLMs."""
-
-    def invoke(self, input: Any, config: dict[str, Any] | None = None) -> Any:
-        """Invoke the model with a prompt or message list."""
 
 
 class StaticPromptProvider:
@@ -139,6 +132,7 @@ class BaseLangGraphAnalystAgent:
         knowledge_service: KnowledgeBackedAnalystService,
         tool_registry: AnalystToolRegistry | None = None,
         prompt_provider: PromptProvider | None = None,
+        llm_client: LLMClient | None = None,
         llm: LLMRunnable | None = None,
     ) -> None:
         if analyst_name:
@@ -146,7 +140,7 @@ class BaseLangGraphAnalystAgent:
         self.knowledge_service = knowledge_service
         self.tool_registry = tool_registry or AnalystToolRegistry()
         self.prompt_provider = prompt_provider
-        self.llm = llm
+        self.llm_client = ensure_llm_client(llm_client=llm_client, llm=llm)
 
     def plan_tool_calls(self, task: AnalystTask) -> list[ToolCallRequest]:
         """Plan the tool calls needed for the current analyst task."""
@@ -239,7 +233,7 @@ class BaseLangGraphAnalystAgent:
         prompt: str,
     ) -> dict[str, Any]:
         """Create the analyst result via LLM synthesis or deterministic fallback."""
-        if self.llm is not None:
+        if self.llm_client is not None:
             return self._synthesize_with_llm(task, knowledge_payload, tool_results, prompt)
         return self._synthesize_fallback(task, knowledge_payload, tool_results, prompt)
 
@@ -250,15 +244,17 @@ class BaseLangGraphAnalystAgent:
         tool_results: list[ToolCallResult],
         prompt: str,
     ) -> dict[str, Any]:
-        """Invoke the configured LLM and normalize the analyst response."""
-        llm_input = self.build_llm_input(
+        """Invoke the configured llm_client and normalize the analyst response."""
+        llm_payload = self.build_llm_payload(
             task,
             knowledge_payload=knowledge_payload,
             tool_results=tool_results,
-            prompt=prompt,
         )
-        raw_response = self.llm.invoke(llm_input)
-        parsed_response = self.parse_llm_response(raw_response)
+        parsed_response = self.llm_client.invoke_json(
+            prompt,
+            payload=llm_payload,
+            schema=self.analyst_output_schema(),
+        )
         return self.normalize_llm_result(
             parsed_response,
             task=task,
@@ -331,16 +327,15 @@ class BaseLangGraphAnalystAgent:
             "tool_trace": [self.serialize_tool_result(result) for result in tool_results],
         }
 
-    def build_llm_input(
+    def build_llm_payload(
         self,
         task: AnalystTask,
         *,
         knowledge_payload: dict[str, Any],
         tool_results: list[ToolCallResult],
-        prompt: str,
-    ) -> Any:
-        """Build the prompt sent into the configured LLM."""
-        llm_payload = {
+    ) -> dict[str, Any]:
+        """Build the payload sent into the configured llm_client."""
+        return {
             "task": {
                 "subject": task.subject,
                 "symbol": task.symbol,
@@ -356,55 +351,6 @@ class BaseLangGraphAnalystAgent:
                 "summary, signals, risks, confidence, and optional evidence_titles."
             ),
         }
-        try:
-            from langchain_core.messages import HumanMessage, SystemMessage
-        except ModuleNotFoundError:
-            return (
-                f"{prompt}\n\n"
-                "Context JSON:\n"
-                f"{json.dumps(llm_payload, ensure_ascii=False, indent=2)}"
-            )
-
-        return [
-            SystemMessage(content=prompt),
-            HumanMessage(content=json.dumps(llm_payload, ensure_ascii=False, indent=2)),
-        ]
-
-    def parse_llm_response(self, raw_response: Any) -> dict[str, Any]:
-        """Parse a model response into a JSON object when possible."""
-        if isinstance(raw_response, dict):
-            return raw_response
-
-        content = getattr(raw_response, "content", raw_response)
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    text_parts.append(item)
-                elif isinstance(item, dict) and item.get("type") == "text":
-                    text_parts.append(str(item.get("text", "")))
-                else:
-                    text_parts.append(str(item))
-            content = "\n".join(part for part in text_parts if part)
-
-        if not isinstance(content, str):
-            return {"summary": str(content)}
-
-        stripped = content.strip()
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            fenced = self._extract_fenced_json(stripped)
-            if fenced is None:
-                return {"summary": stripped}
-            try:
-                parsed = json.loads(fenced)
-            except json.JSONDecodeError:
-                return {"summary": stripped}
-
-        if isinstance(parsed, dict):
-            return parsed
-        return {"summary": stripped}
 
     def normalize_llm_result(
         self,
@@ -451,6 +397,16 @@ class BaseLangGraphAnalystAgent:
             "raw_model_output": llm_result,
         }
 
+    def analyst_output_schema(self) -> dict[str, Any]:
+        """Return the target structured schema for analyst outputs."""
+        return {
+            "summary": "string",
+            "signals": ["string"],
+            "risks": ["string"],
+            "confidence": "low|medium|high",
+            "evidence_titles": ["string"],
+        }
+
     def _normalize_string_list(self, value: Any, *, fallback: list[str]) -> list[str]:
         """Normalize a model field into a list of strings."""
         if isinstance(value, list):
@@ -459,20 +415,6 @@ class BaseLangGraphAnalystAgent:
         if isinstance(value, str) and value.strip():
             return [value.strip()]
         return fallback
-
-    def _extract_fenced_json(self, text: str) -> str | None:
-        """Extract a JSON object from a fenced code block when present."""
-        marker = "```"
-        if marker not in text:
-            return None
-        parts = text.split(marker)
-        for part in parts:
-            candidate = part.strip()
-            if candidate.startswith("json"):
-                candidate = candidate[4:].strip()
-            if candidate.startswith("{") and candidate.endswith("}"):
-                return candidate
-        return None
 
     def invoke(self, task: AnalystTask) -> dict[str, Any]:
         """Run the analyst end-to-end for a single task."""

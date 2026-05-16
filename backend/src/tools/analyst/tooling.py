@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .graph_analyst import KnowledgeBackedAnalystService
+from ...services.analysts.graph_analyst import KnowledgeBackedAnalystService
 
 
 @dataclass(slots=True)
