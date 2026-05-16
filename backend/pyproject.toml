@@ -3,3 +3,6 @@ name = "orca-trading-yuki-backend"
 version = "0.1.0"
 description = "Placeholder Python backend for Orca Trading Yuki."
 requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.2.0,<2.0.0",
+]
