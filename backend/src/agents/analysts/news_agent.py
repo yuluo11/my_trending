@@ -1,36 +1,31 @@
-"""Market analyst service backed by the shared knowledge layer."""
+"""News analyst agent wrapper."""
+
+from __future__ import annotations
 
 from ...knowledge.repository import KnowledgeRepository
 from ...llm.client import LLMClient, LLMRunnable
 from ...tools.analyst.tooling import AnalystToolRegistry
+from ...services.analysts.news_service import NewsAnalystService
 from .base_agent import BaseLangGraphAnalystAgent, PromptProvider
-from .graph_analyst import KnowledgeBackedAnalystService
 
 
-class MarketAnalystService(KnowledgeBackedAnalystService):
-    """Retrieve strategy and market context for broader market analysis."""
-
-    analyst_name = "market_analyst"
-    default_datasets = ("foundation", "dynamic")
-
-
-class MarketAnalystAgent(BaseLangGraphAnalystAgent):
-    """Agent wrapper around the market analyst knowledge service."""
+class NewsAnalystAgent(BaseLangGraphAnalystAgent):
+    """Agent wrapper around the news analyst knowledge service."""
 
     def __init__(
         self,
         *,
         repository: KnowledgeRepository | None = None,
-        service: MarketAnalystService | None = None,
+        service: NewsAnalystService | None = None,
         tool_registry: AnalystToolRegistry | None = None,
         prompt_provider: PromptProvider | None = None,
         llm_client: LLMClient | None = None,
         llm: LLMRunnable | None = None,
     ) -> None:
-        market_service = service or MarketAnalystService(repository=repository)
+        news_service = service or NewsAnalystService(repository=repository)
         super().__init__(
-            analyst_name=market_service.analyst_name,
-            knowledge_service=market_service,
+            analyst_name=news_service.analyst_name,
+            knowledge_service=news_service,
             tool_registry=tool_registry,
             prompt_provider=prompt_provider,
             llm_client=llm_client,

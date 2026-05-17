@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from ....llm.client import LLMClient, LLMRunnable
-from ...analysts.base_agent import PromptProvider
-from ..memory.knowledge_service import DecisionKnowledgeService
-from .base_agent import BaseDecisionAgent
+from ...llm.client import LLMClient, LLMRunnable
+from ...services.decision.memory import DecisionKnowledgeService
+from .base_agent import BaseDecisionAgent, PromptProvider
 
 
 class DecisionAdvisoryAgent(BaseDecisionAgent):
@@ -19,7 +18,6 @@ class DecisionAdvisoryAgent(BaseDecisionAgent):
         llm_client: LLMClient | None = None,
         llm: LLMRunnable | None = None,
     ) -> None:
-        self.service = service
         super().__init__(
             agent_name=service.agent_name,
             knowledge_service=service,

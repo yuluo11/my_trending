@@ -7,26 +7,29 @@ from typing import Any, TypedDict
 
 from .knowledge.repository import DatasetName, KnowledgeRepository
 from .llm.client import LLMClient, LLMRunnable, ensure_llm_client
-from .services.analysts.base_agent import (
+from .agents.analysts.base_agent import (
     AnalystRuntimeState,
     AnalystTask,
     BaseLangGraphAnalystAgent,
     FilePromptProvider,
 )
-from .services.analysts.graph_analyst import GraphAnalystService
-from .services.analysts.market_analyst import MarketAnalystAgent, MarketAnalystService
-from .services.analysts.news_analyst import NewsAnalystAgent, NewsAnalystService
-from .services.analysts.orchestrator import AnalystOrchestrator
-from .services.analysts.sentiment_analyst import (
-    SentimentAnalystAgent,
-    SentimentAnalystService,
-)
-from .services.analysts.social_analyst import SocialAnalystAgent, SocialAnalystService
-from .services.decision import DecisionAdvisoryAgent, DecisionKnowledgeService, DecisionTask
+from .agents.decision import DecisionAdvisoryAgent, DecisionTask
+from .agents.analysts.graph_agent import GraphAnalystAgent
+from .agents.analysts.market_agent import MarketAnalystAgent
+from .agents.analysts.news_agent import NewsAnalystAgent
+from .agents.analysts.orchestrator import AnalystOrchestrator
+from .agents.analysts.sentiment_agent import SentimentAnalystAgent
+from .agents.analysts.social_agent import SocialAnalystAgent
+from .services.analysts.graph_service import GraphAnalystService
+from .services.analysts.market_service import MarketAnalystService
+from .services.analysts.news_service import NewsAnalystService
+from .services.analysts.sentiment_service import SentimentAnalystService
+from .services.analysts.social_service import SocialAnalystService
+from .services.decision import DecisionKnowledgeService
 from .tools.analyst.tooling import AnalystToolRegistry, KnowledgeBaseSearchTool
 
-PROMPTS_DIR = Path(__file__).resolve().parent / "services" / "analysts" / "prompts"
-DECISION_PROMPTS_DIR = Path(__file__).resolve().parent / "services" / "decision" / "prompts"
+PROMPTS_DIR = Path(__file__).resolve().parent / "agents" / "analysts" / "prompts"
+DECISION_PROMPTS_DIR = Path(__file__).resolve().parent / "agents" / "decision" / "prompts"
 DEFAULT_ANALYST_SEQUENCE = (
     "market_analyst",
     "news_analyst",
@@ -80,13 +83,12 @@ def build_graph_analyst_agent(
     prompt_provider: FilePromptProvider | None = None,
     llm_client: LLMClient | None = None,
     llm: LLMRunnable | None = None,
-) -> BaseLangGraphAnalystAgent:
-    """Assemble the first graph analyst agent."""
+) -> GraphAnalystAgent:
+    """Assemble the graph analyst agent."""
     service = GraphAnalystService(repository=repository)
     registry = build_tool_registry(service)
-    return BaseLangGraphAnalystAgent(
-        analyst_name=service.analyst_name,
-        knowledge_service=service,
+    return GraphAnalystAgent(
+        service=service,
         tool_registry=registry,
         prompt_provider=prompt_provider or build_prompt_provider(),
         llm_client=ensure_llm_client(llm_client=llm_client, llm=llm),

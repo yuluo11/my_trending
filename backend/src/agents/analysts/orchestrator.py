@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ...llm.client import LLMClient
@@ -64,20 +64,14 @@ class AnalystOrchestrator:
     ) -> dict[str, Any]:
         """Aggregate analyst outputs into a single orchestration payload."""
         fallback_key_signals = _dedupe_preserve_order(
-            [
-                signal
-                for result in analyst_results
-                for signal in result.get("signals", [])
-            ]
+            [signal for result in analyst_results for signal in result.get("signals", [])]
         )
         fallback_key_risks = _dedupe_preserve_order(
-            [
-                risk
-                for result in analyst_results
-                for risk in result.get("risks", [])
-            ]
+            [risk for result in analyst_results for risk in result.get("risks", [])]
         )
-        fallback_cross_analyst_observations = self.build_cross_analyst_observations(analyst_results)
+        fallback_cross_analyst_observations = self.build_cross_analyst_observations(
+            analyst_results
+        )
         fallback_overall_summary = self.build_overall_summary(
             task,
             analyst_results=analyst_results,
@@ -161,11 +155,7 @@ class AnalystOrchestrator:
         ]
         return "\n\n".join(
             block
-            for block in (
-                shared_prompt,
-                orchestration_prompt,
-                "\n".join(context_lines),
-            )
+            for block in (shared_prompt, orchestration_prompt, "\n".join(context_lines))
             if block
         )
 

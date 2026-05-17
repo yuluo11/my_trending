@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol, TypedDict
 
-from ....llm.client import LLMClient, LLMRunnable, ensure_llm_client
-from ...analysts.base_agent import PromptProvider
-from ..memory.knowledge_service import DecisionKnowledgeService
-from ..models.task import DecisionTask
+from ...knowledge.repository import DatasetName
+from ...llm.client import LLMClient, LLMRunnable, ensure_llm_client
+from ...services.decision.memory import DecisionKnowledgeService
 
 ALLOWED_RECOMMENDATIONS = {
     "consider_buy",
@@ -30,6 +31,138 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
         seen.add(normalized)
         deduped.append(normalized)
     return deduped
+
+
+@dataclass(slots=True)
+class DecisionTask:
+    """Structured input consumed by the decision advisory agent."""
+
+    subject: str
+    symbol: str | None = None
+    trade_date: str | None = None
+    extra_context: str | None = None
+    overall_summary: str = ""
+    overall_confidence: str = "low"
+    key_signals: list[str] = field(default_factory=list)
+    portfolio_risks: list[str] = field(default_factory=list)
+    cross_analyst_observations: list[str] = field(default_factory=list)
+    analyst_results: list[dict[str, Any]] = field(default_factory=list)
+    analyst_sequence: list[str] = field(default_factory=list)
+    datasets: tuple[DatasetName, ...] | None = None
+    metadata_filter: dict[str, Any] | None = None
+    max_documents: int | None = None
+    messages: list[Any] = field(default_factory=list)
+
+    @classmethod
+    def from_analyst_payload(
+        cls,
+        analyst_payload: dict[str, Any],
+        *,
+        datasets: tuple[DatasetName, ...] | None = None,
+        metadata_filter: dict[str, Any] | None = None,
+        max_documents: int | None = None,
+        messages: list[Any] | None = None,
+    ) -> "DecisionTask":
+        """Build a decision task directly from analyst orchestrator output."""
+        return cls(
+            subject=str(analyst_payload.get("subject", "")).strip(),
+            symbol=analyst_payload.get("symbol"),
+            trade_date=analyst_payload.get("trade_date"),
+            extra_context=analyst_payload.get("extra_context"),
+            overall_summary=str(analyst_payload.get("overall_summary", "")).strip(),
+            overall_confidence=str(analyst_payload.get("overall_confidence", "low")).strip(),
+            key_signals=[
+                str(item).strip()
+                for item in analyst_payload.get("key_signals", [])
+                if str(item).strip()
+            ],
+            portfolio_risks=[
+                str(item).strip()
+                for item in analyst_payload.get("portfolio_risks", [])
+                if str(item).strip()
+            ],
+            cross_analyst_observations=[
+                str(item).strip()
+                for item in analyst_payload.get("cross_analyst_observations", [])
+                if str(item).strip()
+            ],
+            analyst_results=list(analyst_payload.get("analyst_results", [])),
+            analyst_sequence=[
+                str(item).strip()
+                for item in analyst_payload.get("analyst_sequence", [])
+                if str(item).strip()
+            ],
+            datasets=datasets,
+            metadata_filter=metadata_filter,
+            max_documents=max_documents,
+            messages=list(messages or analyst_payload.get("messages", [])),
+        )
+
+
+class DecisionRuntimeState(TypedDict, total=False):
+    """State shape for future decision-oriented graph composition."""
+
+    subject: str
+    symbol: str | None
+    trade_date: str | None
+    extra_context: str | None
+    overall_summary: str
+    overall_confidence: str
+    key_signals: list[str]
+    portfolio_risks: list[str]
+    cross_analyst_observations: list[str]
+    analyst_results: list[dict[str, Any]]
+    analyst_sequence: list[str]
+    datasets: tuple[DatasetName, ...] | list[DatasetName] | None
+    metadata_filter: dict[str, Any] | None
+    max_documents: int | None
+    messages: list[Any]
+    decision_output: dict[str, Any]
+
+
+class PromptProvider(Protocol):
+    """Prompt source used by decision agents."""
+
+    def get_shared_prompt(self) -> str:
+        """Return the shared prompt frame used by decision agents."""
+
+    def get_analyst_prompt(self, analyst_name: str) -> str:
+        """Return the role-specific prompt body."""
+
+
+class FilePromptProvider:
+    """Load the shared frame and role-specific prompts from disk."""
+
+    def __init__(
+        self,
+        prompts_dir: str | Path,
+        *,
+        shared_prompt_name: str = "base_prompt.txt",
+        shared_dir_name: str = "shared",
+        roles_dir_name: str = "roles",
+        suffix: str = ".txt",
+    ) -> None:
+        self.prompts_dir = Path(prompts_dir)
+        self.shared_prompt_name = shared_prompt_name
+        self.shared_dir_name = shared_dir_name
+        self.roles_dir_name = roles_dir_name
+        self.suffix = suffix
+
+    def get_shared_prompt(self) -> str:
+        """Return the shared prompt frame from disk."""
+        return self._read_prompt(self.prompts_dir / self.shared_dir_name / self.shared_prompt_name)
+
+    def get_analyst_prompt(self, analyst_name: str) -> str:
+        """Return the agent-specific prompt body from disk."""
+        return self._read_prompt(
+            self.prompts_dir / self.roles_dir_name / f"{analyst_name}{self.suffix}"
+        )
+
+    def _read_prompt(self, prompt_path: Path) -> str:
+        """Read a prompt file if it exists, otherwise return an empty prompt."""
+        if not prompt_path.exists():
+            return ""
+        return prompt_path.read_text(encoding="utf-8").strip()
 
 
 class BaseDecisionAgent:
