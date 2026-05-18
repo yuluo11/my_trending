@@ -55,6 +55,7 @@ class AppRuntimeState(TypedDict, total=False):
     messages: list[Any]
     analyst_outputs: dict[str, dict[str, Any]]
     decision_output: dict[str, Any]
+    portfolio_context: dict[str, Any] | None
 
 
 def build_prompt_provider(
