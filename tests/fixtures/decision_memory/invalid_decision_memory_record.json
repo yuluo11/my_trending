@@ -1,0 +1,20 @@
+{
+  "text": "",
+  "metadata": {
+    "source_type": "partner",
+    "title": "Invalid Decision Memory Case",
+    "category": "research_note",
+    "memory_type": "bad_case",
+    "subject": "",
+    "topic": "decision-memory",
+    "recommendation": "buy_now",
+    "confidence": "certain",
+    "signal_tags": "momentum",
+    "risk_tags": [
+      "crowded_trade",
+      ""
+    ],
+    "quality_score": 1.7,
+    "dataset": "archive"
+  }
+}

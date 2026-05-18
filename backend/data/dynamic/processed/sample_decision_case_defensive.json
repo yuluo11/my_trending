@@ -1,0 +1,43 @@
+{
+  "text": "A prior internal decision on a defensive rotation setup concluded that preserving cash and trimming cyclical exposure was more appropriate than adding risk. The case involved a risk-off tape, weakening momentum, and rising concern that crowded growth positions would mean-revert faster than positive catalysts could offset.",
+  "metadata": {
+    "source": "internal_decision_log",
+    "source_type": "internal",
+    "title": "Sample Defensive Decision Memory Case",
+    "created_at": "2026-05-17T10:00:00+08:00",
+    "updated_at": "2026-05-17T10:00:00+08:00",
+    "category": "decision_memory",
+    "memory_type": "decision_case",
+    "tags": [
+      "defensive",
+      "risk-off",
+      "rotation",
+      "drawdown"
+    ],
+    "symbol": "XLU",
+    "subject": "Defensive rotation and de-risking",
+    "topic": "decision-memory",
+    "recommendation": "consider_reduce",
+    "confidence": "medium",
+    "market_regime": "risk_off",
+    "analyst_alignment": "aligned",
+    "signal_tags": [
+      "momentum"
+    ],
+    "risk_tags": [
+      "drawdown_risk",
+      "crowded_trade"
+    ],
+    "timing_tags": [
+      "short_term"
+    ],
+    "portfolio_state_tags": [
+      "existing_position",
+      "reduce_exposure_bias",
+      "limited_cash"
+    ],
+    "outcome_label": "mixed",
+    "quality_score": 0.67,
+    "dataset": "dynamic"
+  }
+}

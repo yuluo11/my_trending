@@ -1,0 +1,44 @@
+{
+  "text": "A prior internal decision on a constructive semiconductor reset concluded that the setup supported a measured initial position because the portfolio had no existing exposure, cash reserves were healthy, and the analyst evidence aligned around a still-active catalyst. The advisory stance favored staged entry rather than full-size deployment because valuation risk remained present even though momentum had stabilized.",
+  "metadata": {
+    "source": "internal_decision_log",
+    "source_type": "internal",
+    "title": "Sample Fresh Entry Decision Memory Case",
+    "created_at": "2026-05-18T10:00:00+08:00",
+    "updated_at": "2026-05-18T10:00:00+08:00",
+    "category": "decision_memory",
+    "memory_type": "decision_case",
+    "tags": [
+      "semiconductors",
+      "reset",
+      "fresh-entry",
+      "staged-add"
+    ],
+    "symbol": "NVDA",
+    "subject": "Constructive reset with room for new exposure",
+    "topic": "decision-memory",
+    "recommendation": "consider_buy",
+    "confidence": "medium",
+    "market_regime": "event_driven",
+    "analyst_alignment": "aligned",
+    "signal_tags": [
+      "news_catalyst",
+      "momentum",
+      "ai_theme"
+    ],
+    "risk_tags": [
+      "valuation_risk"
+    ],
+    "timing_tags": [
+      "short_term",
+      "event_window"
+    ],
+    "portfolio_state_tags": [
+      "no_position",
+      "ample_cash"
+    ],
+    "outcome_label": "worked",
+    "quality_score": 0.79,
+    "dataset": "dynamic"
+  }
+}

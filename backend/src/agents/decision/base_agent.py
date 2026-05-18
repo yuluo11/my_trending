@@ -18,7 +18,6 @@ ALLOWED_RECOMMENDATIONS = {
     "no_trade",
 }
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
-ADVISORY_SCOPE = "advisory_only"
 
 
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
@@ -95,7 +94,9 @@ class DecisionTask:
                 for item in analyst_payload.get("analyst_sequence", [])
                 if str(item).strip()
             ],
-            portfolio_context=portfolio_context,
+            portfolio_context=portfolio_context
+            if portfolio_context is not None
+            else analyst_payload.get("portfolio_context"),
             datasets=datasets,
             metadata_filter=metadata_filter,
             max_documents=max_documents,
@@ -212,7 +213,8 @@ class BaseDecisionAgent:
             "extra_context": task.extra_context,
             "overall_confidence": task.overall_confidence,
             "analyst_count": len(task.analyst_results),
-            "has_portfolio_context": bool(task.portfolio_context),
+            "portfolio_context_used": bool(task.portfolio_context),
+            "portfolio_context_summary": self.summarize_portfolio_context(task.portfolio_context),
             "decision_context": decision_context,
         }
 
@@ -230,7 +232,11 @@ class BaseDecisionAgent:
             f"extra_context: {prompt_context.get('extra_context') or 'N/A'}",
             f"overall_confidence: {prompt_context.get('overall_confidence') or 'low'}",
             f"analyst_count: {prompt_context.get('analyst_count', 0)}",
-            f"portfolio_context_available: {prompt_context.get('has_portfolio_context', False)}",
+            f"portfolio_context_used: {prompt_context.get('portfolio_context_used', False)}",
+            (
+                "portfolio_context: "
+                f"{prompt_context.get('portfolio_context_summary') or 'N/A'}"
+            ),
             (
                 "decision_memory_documents: "
                 f"{prompt_context['decision_context'].get('document_count', 0)}"
@@ -259,31 +265,45 @@ class BaseDecisionAgent:
                 "symbol": task.symbol,
                 "trade_date": task.trade_date,
                 "extra_context": task.extra_context,
+                "portfolio_context": task.portfolio_context or {},
             },
-            "analysis": {
-                "overall_summary": task.overall_summary,
-                "overall_confidence": task.overall_confidence,
-                "key_signals": task.key_signals,
-                "portfolio_risks": task.portfolio_risks,
-                "cross_analyst_observations": task.cross_analyst_observations,
-                "analyst_sequence": task.analyst_sequence,
-                "analyst_results": task.analyst_results,
-            },
-            "portfolio_context": task.portfolio_context or {},
-            "decision_memory": {
-                "query": decision_context.get("query", ""),
-                "document_count": decision_context.get("document_count", 0),
-                "documents": decision_context.get("documents", []),
-                "evidence": decision_context.get("evidence", []),
-            },
+            "analysis": self.build_analysis_payload(task),
+            "decision_memory": self.build_decision_memory_payload(decision_context),
             "instructions": (
                 "Return a JSON object with keys: decision_summary, recommendation, "
-                "advisory_scope, portfolio_context_used, portfolio_context_summary, "
-                "position_impact, timing_decision, action_conditions, no_action_reasons, "
-                "aggregated_risks, rationale, confidence, reference_cases, and "
-                "case_fit_assessment. This is advisory only and must not imply trade execution "
-                "or guaranteed outcomes."
+                "portfolio_context_used, portfolio_context_summary, position_impact, "
+                "timing_decision, action_conditions, no_action_reasons, aggregated_risks, "
+                "rationale, confidence, reference_cases, and case_fit_assessment. This is "
+                "advisory only and must not imply trade execution. Use portfolio context when it "
+                "is provided, and use scenario fit, not just raw similarity, when discussing "
+                "reference cases."
             ),
+        }
+
+    def build_analysis_payload(self, task: DecisionTask) -> dict[str, Any]:
+        """Build the analyst-synthesis block consumed by the decision model."""
+        return {
+            "overall_summary": task.overall_summary,
+            "overall_confidence": task.overall_confidence,
+            "key_signals": task.key_signals,
+            "portfolio_risks": task.portfolio_risks,
+            "cross_analyst_observations": task.cross_analyst_observations,
+            "analyst_sequence": task.analyst_sequence,
+            "analyst_results": task.analyst_results,
+        }
+
+    def build_decision_memory_payload(
+        self,
+        decision_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the retrieved decision-memory block consumed by the decision model."""
+        return {
+            "query": decision_context.get("query", ""),
+            "scenario_profile": decision_context.get("scenario_profile", {}),
+            "document_count": decision_context.get("document_count", 0),
+            "validation_summary": decision_context.get("validation_summary", {}),
+            "documents": decision_context.get("documents", []),
+            "evidence": decision_context.get("evidence", []),
         }
 
     def invoke(self, task: DecisionTask) -> dict[str, Any]:
@@ -332,36 +352,25 @@ class BaseDecisionAgent:
     ) -> dict[str, Any]:
         """Produce a cautious deterministic advisory result."""
         recommendation = self._fallback_recommendation(task)
-        confidence = self._normalize_confidence(task.overall_confidence)
         reference_cases = self._fallback_reference_cases(decision_context)
         aggregated_risks = _dedupe_preserve_order(task.portfolio_risks)
         if not aggregated_risks:
             aggregated_risks = ["Current analyst evidence does not yet support a stronger action."]
-        portfolio_context_summary = self._fallback_portfolio_context_summary(task)
-        portfolio_context_used = bool(task.portfolio_context)
-        position_impact = self._fallback_position_impact(task, recommendation=recommendation)
-        timing_decision = self._fallback_timing_decision(
-            task,
-            recommendation=recommendation,
-            confidence=confidence,
-        )
-        action_conditions = self._fallback_action_conditions(
-            task,
-            recommendation=recommendation,
-        )
-        no_action_reasons = self._fallback_no_action_reasons(
-            task,
-            recommendation=recommendation,
-            aggregated_risks=aggregated_risks,
-        )
+        position_impact = self._fallback_position_impact(task, recommendation)
+        timing_decision = self._fallback_timing_decision(task, recommendation)
+        action_conditions = self._fallback_action_conditions(task, recommendation)
+        no_action_reasons = self._fallback_no_action_reasons(task, recommendation)
 
         decision_summary = (
             f"Current analyst evidence for {task.subject} supports a {recommendation} stance."
         )
+        portfolio_context_summary = self.summarize_portfolio_context(task.portfolio_context)
         rationale_parts = [
             f"The decision layer reviewed {len(task.analyst_results)} analyst perspective(s).",
-            f"Overall analyst confidence is {confidence}.",
+            f"Overall analyst confidence is {self._normalize_confidence(task.overall_confidence)}.",
         ]
+        if portfolio_context_summary:
+            rationale_parts.append(f"Portfolio context considered: {portfolio_context_summary}.")
         if task.key_signals:
             rationale_parts.append(f"Leading signals: {', '.join(task.key_signals[:3])}.")
         if reference_cases:
@@ -370,15 +379,7 @@ class BaseDecisionAgent:
             )
         rationale = " ".join(rationale_parts)
 
-        if reference_cases:
-            case_fit_assessment = (
-                "Reference cases were used as advisory context only and should not be copied directly."
-            )
-        else:
-            case_fit_assessment = (
-                "No matching decision-memory cases were retrieved, so the recommendation relies on "
-                "current analyst synthesis only."
-            )
+        case_fit_assessment = self._fallback_case_fit_assessment(reference_cases)
 
         return {
             "subject": task.subject,
@@ -386,8 +387,7 @@ class BaseDecisionAgent:
             "trade_date": task.trade_date,
             "decision_summary": decision_summary,
             "recommendation": recommendation,
-            "advisory_scope": ADVISORY_SCOPE,
-            "portfolio_context_used": portfolio_context_used,
+            "portfolio_context_used": bool(task.portfolio_context),
             "portfolio_context_summary": portfolio_context_summary,
             "position_impact": position_impact,
             "timing_decision": timing_decision,
@@ -395,7 +395,7 @@ class BaseDecisionAgent:
             "no_action_reasons": no_action_reasons,
             "aggregated_risks": aggregated_risks,
             "rationale": rationale,
-            "confidence": confidence,
+            "confidence": self._normalize_confidence(task.overall_confidence),
             "reference_cases": reference_cases,
             "case_fit_assessment": case_fit_assessment,
             "prompt": prompt,
@@ -426,12 +426,7 @@ class BaseDecisionAgent:
             ).strip()
             or fallback_result["decision_summary"],
             "recommendation": recommendation,
-            "advisory_scope": self._normalize_advisory_scope(
-                llm_result.get("advisory_scope", fallback_result["advisory_scope"])
-            ),
-            "portfolio_context_used": self._normalize_bool(
-                llm_result.get("portfolio_context_used", fallback_result["portfolio_context_used"])
-            ),
+            "portfolio_context_used": bool(task.portfolio_context),
             "portfolio_context_summary": str(
                 llm_result.get(
                     "portfolio_context_summary",
@@ -482,7 +477,6 @@ class BaseDecisionAgent:
         return {
             "decision_summary": "string",
             "recommendation": "consider_buy|consider_reduce|hold|keep_watch|no_trade",
-            "advisory_scope": "advisory_only",
             "portfolio_context_used": "boolean",
             "portfolio_context_summary": "string",
             "position_impact": "string",
@@ -518,308 +512,186 @@ class BaseDecisionAgent:
 
     def _fallback_recommendation(self, task: DecisionTask) -> str:
         """Generate a conservative recommendation when no model output is available."""
+        portfolio_context = task.portfolio_context or {}
+        current_position = self._find_symbol_position(portfolio_context, task.symbol)
+        current_weight = self._extract_position_weight(current_position)
+        max_weight = self._extract_max_single_name_pct(portfolio_context)
+        cash_pct = self._extract_percent(portfolio_context.get("cash_pct"))
+        has_conflict = self._has_material_conflict(task.cross_analyst_observations)
+        confidence = self._normalize_confidence(task.overall_confidence)
+
+        if current_weight is not None and max_weight is not None and current_weight > max_weight:
+            return "consider_reduce"
         if not task.key_signals:
             return "no_trade"
-        if self._has_material_conflict(task.cross_analyst_observations):
+        if has_conflict:
             return "keep_watch"
-        if self._normalize_confidence(task.overall_confidence) == "high":
+        if (
+            current_weight is not None
+            and max_weight is not None
+            and current_weight >= max_weight * 0.9
+        ):
+            return "hold"
+        if current_weight is None and confidence == "high" and (cash_pct is None or cash_pct >= 5):
+            return "consider_buy"
+        if current_weight is None and cash_pct is not None and cash_pct < 5:
+            return "keep_watch"
+        if confidence == "high":
             return "hold"
         return "keep_watch"
 
     def _fallback_position_impact(
         self,
         task: DecisionTask,
-        *,
         recommendation: str,
     ) -> str:
-        """Describe the advisory effect on positioning without implying execution."""
-        symbol_or_subject = task.symbol or task.subject
-        position = self._find_relevant_position(task)
-        current_weight = self._extract_position_weight(position)
-        cash_pct = self._extract_numeric_value(
-            task.portfolio_context,
-            ("cash_pct", "cash_weight_pct", "cash_weight", "cash"),
-        )
-        max_single_name_pct = self._extract_max_single_name_pct(task.portfolio_context)
-        headroom_pct = self._calculate_headroom_pct(
-            current_weight=current_weight,
-            max_single_name_pct=max_single_name_pct,
-        )
+        """Describe portfolio impact using current holdings when available."""
+        portfolio_context = task.portfolio_context or {}
+        current_position = self._find_symbol_position(portfolio_context, task.symbol)
+        current_weight = self._extract_position_weight(current_position)
+        cash_pct = self._extract_percent(portfolio_context.get("cash_pct"))
+        max_weight = self._extract_max_single_name_pct(portfolio_context)
 
-        if recommendation == "consider_buy":
-            if current_weight is not None:
-                detail = (
-                    f"If adopted, this would add to the existing {self._format_pct(current_weight)} "
-                    f"portfolio weight in {symbol_or_subject}."
+        if task.symbol and current_weight is not None:
+            if recommendation == "consider_reduce":
+                return (
+                    f"The current {task.symbol} position is about {current_weight:.1f}% and the "
+                    "advisory stance favors reducing exposure rather than adding to it."
                 )
-                if headroom_pct is not None:
-                    detail += (
-                        f" Based on the current single-name limit, roughly "
-                        f"{self._format_pct(headroom_pct)} of headroom remains."
-                    )
-                return detail
-            detail = f"If adopted, this would initiate new exposure to {symbol_or_subject}."
-            if max_single_name_pct is not None:
-                detail += (
-                    f" A prudent upper bound from the current portfolio context is around "
-                    f"{self._format_pct(max_single_name_pct)}."
+            if recommendation == "hold":
+                return (
+                    f"The current {task.symbol} position is about {current_weight:.1f}% and the "
+                    "advisory stance is to maintain that exposure for now."
+                )
+            return (
+                f"The current {task.symbol} position is about {current_weight:.1f}% and the "
+                "advisory stance does not support immediate resizing."
+            )
+
+        if task.symbol and recommendation == "consider_buy":
+            if cash_pct is not None and max_weight is not None:
+                return (
+                    f"No existing {task.symbol} position was identified. With cash near "
+                    f"{cash_pct:.1f}% and a single-name limit near {max_weight:.1f}%, the "
+                    "current setup supports considering a measured new position rather than a full-size entry."
                 )
             if cash_pct is not None:
-                detail += f" Available cash currently screens at {self._format_pct(cash_pct)}."
-            return detail
-        if recommendation == "consider_reduce":
-            if current_weight is not None:
-                detail = (
-                    f"If adopted, this would reduce the current {self._format_pct(current_weight)} "
-                    f"portfolio weight in {symbol_or_subject}"
-                )
-                if max_single_name_pct is not None and current_weight > max_single_name_pct:
-                    detail += (
-                        f", which is currently above the configured single-name limit of "
-                        f"{self._format_pct(max_single_name_pct)}"
-                    )
-                return detail + "."
-            return (
-                f"No live position in {symbol_or_subject} was found in the provided portfolio context, "
-                "so a reduce recommendation would mainly lower planned rather than current exposure."
-            )
-        if recommendation == "hold":
-            if current_weight is not None:
                 return (
-                    f"This stance keeps the current {self._format_pct(current_weight)} portfolio weight "
-                    f"in {symbol_or_subject} unchanged while monitoring whether the evidence improves or weakens."
+                    f"No existing {task.symbol} position was identified. Cash is about "
+                    f"{cash_pct:.1f}%, so the setup can be treated as a measured add candidate."
                 )
             return (
-                f"This stance does not imply a new trade in {symbol_or_subject}; it mainly preserves "
-                "current exposure while monitoring risk."
+                f"No existing {task.symbol} position was identified, and the current setup "
+                "supports only a measured initial exposure rather than an aggressive entry."
             )
-        if current_weight is not None:
+
+        if task.symbol and recommendation in {"keep_watch", "no_trade"}:
+            base = f"No existing {task.symbol} position was identified."
+            if cash_pct is not None:
+                return (
+                    f"{base} Cash is about {cash_pct:.1f}%, but the current setup does not yet "
+                    "justify adding new exposure."
+                )
+            return f"{base} The current setup does not yet justify adding new exposure."
+
+        if task.symbol and recommendation == "hold" and max_weight is not None:
             return (
-                f"This stance does not justify changing the current {self._format_pct(current_weight)} "
-                f"portfolio weight in {symbol_or_subject} yet."
+                f"Any future exposure to {task.symbol} should stay mindful of the single-name "
+                f"limit near {max_weight:.1f}%."
             )
+
         return (
-            f"This stance does not justify changing exposure to {symbol_or_subject} yet; "
-            "current positioning impact is effectively neutral."
-        )
-
-    def _fallback_portfolio_context_summary(self, task: DecisionTask) -> str:
-        """Summarize the portfolio context available to the decision layer."""
-        portfolio_context = task.portfolio_context
-        if not isinstance(portfolio_context, dict):
-            return "No portfolio context was provided, so positioning impact remains advisory and generic."
-
-        position = self._find_relevant_position(task)
-        current_weight = self._extract_position_weight(position)
-        cash_pct = self._extract_numeric_value(
-            portfolio_context,
-            ("cash_pct", "cash_weight_pct", "cash_weight", "cash"),
-        )
-        max_single_name_pct = self._extract_max_single_name_pct(portfolio_context)
-        positions = portfolio_context.get("positions")
-        position_count = len(positions) if isinstance(positions, list) else None
-
-        parts: list[str] = []
-        if position_count is not None:
-            parts.append(f"Portfolio context includes {position_count} tracked position(s).")
-        if current_weight is not None and task.symbol:
-            parts.append(
-                f"The current portfolio weight in {task.symbol} is {self._format_pct(current_weight)}."
-            )
-        elif task.symbol:
-            parts.append(f"No live position in {task.symbol} was found in the supplied portfolio context.")
-        if max_single_name_pct is not None:
-            parts.append(
-                f"The configured single-name limit is {self._format_pct(max_single_name_pct)}."
-            )
-        if cash_pct is not None:
-            parts.append(f"Available cash is approximately {self._format_pct(cash_pct)}.")
-        return " ".join(parts) or (
-            "Portfolio context was provided, but it did not include readable sizing or limit fields."
+            "The current advisory stance is not expected to materially change portfolio exposure "
+            "until stronger confirmation appears."
         )
 
     def _fallback_timing_decision(
         self,
         task: DecisionTask,
-        *,
         recommendation: str,
-        confidence: str,
     ) -> str:
-        """Return a bounded timing suggestion for the advisory output."""
-        if recommendation in {"no_trade", "keep_watch"}:
-            if self._has_material_conflict(task.cross_analyst_observations):
-                return "Wait for stronger cross-analyst alignment before considering action."
-            return "Wait for clearer confirmation in signals or reduced risk before considering action."
-        if recommendation == "hold":
-            if confidence == "high":
-                return "Maintain the current stance now, but reassess around the next material signal change."
-            return "Maintain the current stance for now and reassess as evidence improves."
+        """Provide a bounded view on timing rather than an execution instruction."""
+        scenario_profile = self._scenario_profile_from_task(task)
+        cash_pct = self._extract_percent((task.portfolio_context or {}).get("cash_pct"))
         if recommendation == "consider_reduce":
-            return "Any reduction should be considered around strength rather than after risk has already accelerated."
-        return "Any action should be considered gradually and only after confirmation improves."
+            return "Current conditions support reviewing exposure now rather than waiting for a stronger risk signal."
+        if recommendation == "consider_buy":
+            if "near_local_high" in scenario_profile.get("timing_tags", []):
+                return "The setup is constructive, but because it looks extended, any new exposure should wait for confirmation or be sized in gradually."
+            return "The setup is constructive enough to consider a measured entry now, provided exposure is staged rather than rushed."
+        if self._has_material_conflict(task.cross_analyst_observations):
+            return "Waiting for clearer analyst alignment is preferable before changing exposure."
+        if "near_local_high" in scenario_profile.get("timing_tags", []):
+            return "The setup looks extended, so waiting for better confirmation or a less stretched entry is preferable."
+        if cash_pct is not None and cash_pct < 5:
+            return "Limited cash makes immediate action less attractive, so timing should improve only if conviction strengthens meaningfully."
+        if self._normalize_confidence(task.overall_confidence) == "high":
+            return "The setup is actionable only in a measured way, with preference for staged decision-making over urgency."
+        return "The current setup is better treated as a watchlist decision than an immediate portfolio action."
 
     def _fallback_action_conditions(
         self,
         task: DecisionTask,
-        *,
         recommendation: str,
     ) -> list[str]:
-        """List conditions that would strengthen the current advisory stance."""
-        if recommendation == "consider_buy":
-            return [
-                "Cross-analyst conviction strengthens rather than diverges.",
-                "The leading constructive signals remain intact without a parallel rise in top risks.",
-                "Short-term confirmation improves before any stronger action is considered.",
-            ]
-        if recommendation == "consider_reduce":
-            return [
-                "The most important risks continue to intensify or spread across analysts.",
-                "Protective action is considered before downside pressure becomes disorderly.",
-                "Risk signals deteriorate faster than constructive signals improve.",
-            ]
-        return [
-            "Cross-analyst alignment improves materially.",
-            "The highest-priority risks begin to ease or are invalidated.",
-            "A clearer confirmation window appears before the stance is upgraded.",
+        """List the conditions that would strengthen the advisory stance."""
+        conditions = [
+            "Keep the recommendation bounded to current analyst evidence and any matching decision-memory cases.",
         ]
+        if task.key_signals:
+            conditions.append(
+                f"Act only if the leading signals remain intact: {', '.join(task.key_signals[:2])}."
+            )
+        cash_pct = self._extract_percent((task.portfolio_context or {}).get("cash_pct"))
+        max_weight = self._extract_max_single_name_pct(task.portfolio_context or {})
+        if max_weight is not None and task.symbol:
+            conditions.append(
+                f"Any exposure change should remain within the single-name limit near {max_weight:.1f}%."
+            )
+        if recommendation == "consider_buy" and cash_pct is not None:
+            conditions.append(
+                f"Keep enough liquidity after any entry; current cash is about {cash_pct:.1f}%."
+            )
+        if recommendation in {"keep_watch", "no_trade"}:
+            conditions.append(
+                "Look for stronger cross-analyst confirmation before upgrading the stance."
+            )
+        return conditions
 
     def _fallback_no_action_reasons(
         self,
         task: DecisionTask,
-        *,
         recommendation: str,
-        aggregated_risks: list[str],
     ) -> list[str]:
-        """Explain why the advisory layer is not escalating into a stronger action."""
+        """Explain why the current stance is still constrained."""
         reasons: list[str] = []
-        if recommendation in {"keep_watch", "no_trade"}:
-            reasons.append("The current evidence is not strong enough to justify a higher-conviction action.")
+        if recommendation in {"keep_watch", "no_trade", "hold"}:
+            reasons.append("Current evidence does not yet justify a more aggressive portfolio change.")
         if self._has_material_conflict(task.cross_analyst_observations):
-            reasons.append("Analyst perspectives still show material disagreement or uneven conviction.")
-        if self._normalize_confidence(task.overall_confidence) == "low":
-            reasons.append("Overall analyst confidence is still low.")
-        reasons.extend(self._normalize_advisory_risk_reason(risk) for risk in aggregated_risks[:2])
-        if not reasons and recommendation == "hold":
-            reasons.append("The current evidence supports maintaining stance rather than changing it.")
-        return _dedupe_preserve_order(reasons)
-
-    def _normalize_advisory_risk_reason(self, risk: str) -> str:
-        """Rewrite low-level risk text into user-facing advisory language when needed."""
-        normalized = risk.strip()
-        lowered = normalized.lower()
-        if "first-pass synthesis pending a model-backed analyst prompt" in lowered:
-            return "Some of the current evidence is still preliminary rather than fully model-refined."
-        if "tool" in lowered and "failed" in lowered:
-            return "Some supporting evidence may be incomplete because at least one tool path was unavailable."
-        return normalized
-
-    def _normalize_advisory_scope(self, value: Any) -> str:
-        """Keep advisory scope pinned to the supported contract."""
-        normalized = str(value or ADVISORY_SCOPE).strip().lower()
-        if normalized != ADVISORY_SCOPE:
-            return ADVISORY_SCOPE
-        return normalized
-
-    def _normalize_bool(self, value: Any) -> bool:
-        """Normalize model output into a boolean."""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            return value.strip().lower() in {"true", "1", "yes", "y"}
-        return False
-
-    def _find_relevant_position(self, task: DecisionTask) -> dict[str, Any] | None:
-        """Return the portfolio position matching the current symbol when available."""
-        portfolio_context = task.portfolio_context
-        if not isinstance(portfolio_context, dict):
-            return None
-        positions = portfolio_context.get("positions")
-        if not isinstance(positions, list) or not task.symbol:
-            return None
-
-        target_symbol = task.symbol.strip().upper()
-        for position in positions:
-            if not isinstance(position, dict):
-                continue
-            position_symbol = str(position.get("symbol", "")).strip().upper()
-            if position_symbol == target_symbol:
-                return position
-        return None
-
-    def _extract_position_weight(self, position: dict[str, Any] | None) -> float | None:
-        """Extract a normalized position weight percentage from a position record."""
-        if not isinstance(position, dict):
-            return None
-        return self._extract_numeric_value(
-            position,
-            ("weight_pct", "portfolio_weight_pct", "weight", "portfolio_weight", "exposure_pct"),
-        )
-
-    def _extract_max_single_name_pct(
-        self,
-        portfolio_context: dict[str, Any] | None,
-    ) -> float | None:
-        """Extract a configured single-name limit percentage from portfolio context."""
-        if not isinstance(portfolio_context, dict):
-            return None
-
-        direct_limit = self._extract_numeric_value(
-            portfolio_context,
-            ("max_single_name_pct", "single_name_limit_pct", "max_position_pct"),
-        )
-        if direct_limit is not None:
-            return direct_limit
-
-        limits = portfolio_context.get("position_limits")
-        if isinstance(limits, dict):
-            return self._extract_numeric_value(
-                limits,
-                ("max_single_name_pct", "single_name_limit_pct", "max_position_pct"),
+            reasons.append(
+                "Cross-analyst alignment is not strong enough to support a higher-conviction action."
             )
-        return None
-
-    def _calculate_headroom_pct(
-        self,
-        *,
-        current_weight: float | None,
-        max_single_name_pct: float | None,
-    ) -> float | None:
-        """Calculate remaining single-name headroom in percentage points."""
-        if current_weight is None or max_single_name_pct is None:
-            return None
-        return max(max_single_name_pct - current_weight, 0.0)
-
-    def _extract_numeric_value(
-        self,
-        payload: dict[str, Any] | None,
-        keys: tuple[str, ...],
-    ) -> float | None:
-        """Extract a numeric percentage-like value from a dictionary."""
-        if not isinstance(payload, dict):
-            return None
-
-        for key in keys:
-            if key not in payload:
-                continue
-            value = payload.get(key)
-            if isinstance(value, bool) or value is None:
-                continue
-            if isinstance(value, (int, float)):
-                return float(value)
-            if isinstance(value, str):
-                normalized = value.strip().rstrip("%")
-                try:
-                    return float(normalized)
-                except ValueError:
-                    continue
-        return None
-
-    def _format_pct(self, value: float) -> str:
-        """Render a percentage-like number for advisory output."""
-        formatted = f"{value:.2f}".rstrip("0").rstrip(".")
-        return f"{formatted}%"
+        cash_pct = self._extract_percent((task.portfolio_context or {}).get("cash_pct"))
+        if recommendation != "consider_buy" and cash_pct is not None and cash_pct < 5:
+            reasons.append(
+                "Available cash is limited, which reduces flexibility for adding new exposure."
+            )
+        current_weight = self._extract_position_weight(
+            self._find_symbol_position(task.portfolio_context or {}, task.symbol)
+        )
+        max_weight = self._extract_max_single_name_pct(task.portfolio_context or {})
+        if (
+            recommendation == "hold"
+            and current_weight is not None
+            and max_weight is not None
+            and current_weight >= max_weight * 0.9
+        ):
+            reasons.append("Current exposure is already close to the single-name limit.")
+        if task.portfolio_risks:
+            reasons.append(f"Key risks remain active: {', '.join(task.portfolio_risks[:2])}.")
+        if not reasons:
+            reasons.append("The current stance remains advisory and conditional rather than execution-oriented.")
+        return reasons
 
     def _fallback_reference_cases(
         self,
@@ -834,12 +706,41 @@ class BaseDecisionAgent:
                     "title": str(document.get("title", "")).strip() or "Untitled decision case",
                     "memory_type": str(metadata.get("memory_type", "decision_case")).strip()
                     or "decision_case",
-                    "fit": "medium",
-                    "why_relevant": str(metadata.get("subject", "")).strip()
+                    "fit": str(document.get("fit") or metadata.get("fit") or "medium").strip().lower()
+                    or "medium",
+                    "why_relevant": "; ".join(document.get("match_reasons", [])[:2])
+                    or str(metadata.get("subject", "")).strip()
                     or "Retrieved as a potentially similar decision-memory case.",
                 }
             )
         return reference_cases
+
+    def _fallback_case_fit_assessment(
+        self,
+        reference_cases: list[dict[str, str]],
+    ) -> str:
+        """Summarize how well retrieved reference cases match the current setup."""
+        if not reference_cases:
+            return (
+                "No matching decision-memory cases were retrieved, so the recommendation relies on "
+                "current analyst synthesis only."
+            )
+
+        fits = [str(case.get("fit", "low")).strip().lower() for case in reference_cases]
+        if any(fit == "high" for fit in fits):
+            return (
+                "At least one reference case shows high scenario fit, but it remains supporting "
+                "context rather than an instruction to copy."
+            )
+        if any(fit == "medium" for fit in fits):
+            return (
+                "Reference cases show partial scenario fit and were used to frame similarities and "
+                "differences, not to force a decision."
+            )
+        return (
+            "The retrieved reference cases have weak scenario fit, so they mainly serve as a "
+            "confidence check rather than a directional guide."
+        )
 
     def _normalize_string_list(self, value: Any, *, fallback: list[str]) -> list[str]:
         """Normalize a model value into a non-empty list of strings."""
@@ -891,6 +792,89 @@ class BaseDecisionAgent:
         if confidence not in ALLOWED_CONFIDENCE:
             return "low"
         return confidence
+
+    def summarize_portfolio_context(self, portfolio_context: dict[str, Any] | None) -> str:
+        """Summarize portfolio inputs into a compact prompt/debug string."""
+        if not isinstance(portfolio_context, dict) or not portfolio_context:
+            return ""
+
+        positions = portfolio_context.get("positions")
+        position_count = len(positions) if isinstance(positions, list) else 0
+        cash_pct = self._extract_percent(portfolio_context.get("cash_pct"))
+        max_weight = self._extract_max_single_name_pct(portfolio_context)
+        summary_parts = [f"positions={position_count}"]
+        if cash_pct is not None:
+            summary_parts.append(f"cash_pct={cash_pct:.1f}")
+        if max_weight is not None:
+            summary_parts.append(f"max_single_name_pct={max_weight:.1f}")
+        return ", ".join(summary_parts)
+
+    def _scenario_profile_from_task(self, task: DecisionTask) -> dict[str, Any]:
+        """Infer lightweight timing cues directly from the task."""
+        combined = " ".join(
+            [task.subject, task.extra_context or "", task.overall_summary, *task.cross_analyst_observations]
+        ).lower()
+        timing_tags: list[str] = []
+        if any(keyword in combined for keyword in ("high", "extended", "stretched", "overbought")):
+            timing_tags.append("near_local_high")
+        if any(keyword in combined for keyword in ("event", "earnings", "guidance", "catalyst")):
+            timing_tags.append("event_window")
+        return {"timing_tags": timing_tags}
+
+    def _find_symbol_position(
+        self,
+        portfolio_context: dict[str, Any],
+        symbol: str | None,
+    ) -> dict[str, Any] | None:
+        """Return the current position object for the requested symbol if present."""
+        if not symbol:
+            return None
+        positions = portfolio_context.get("positions", [])
+        if not isinstance(positions, list):
+            return None
+        target_symbol = symbol.strip().upper()
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            if str(position.get("symbol", "")).strip().upper() == target_symbol:
+                return position
+        return None
+
+    def _extract_position_weight(self, position: dict[str, Any] | None) -> float | None:
+        """Extract a normalized percent weight from a position object."""
+        if not isinstance(position, dict):
+            return None
+        for field_name in ("weight_pct", "weight"):
+            value = self._extract_percent(position.get(field_name))
+            if value is not None:
+                return value
+        return None
+
+    def _extract_max_single_name_pct(self, portfolio_context: dict[str, Any]) -> float | None:
+        """Extract the active single-name position limit if one is available."""
+        direct_value = self._extract_percent(portfolio_context.get("max_single_name_pct"))
+        if direct_value is not None:
+            return direct_value
+        position_limits = portfolio_context.get("position_limits")
+        if isinstance(position_limits, dict):
+            return self._extract_percent(position_limits.get("max_single_name_pct"))
+        return None
+
+    def _extract_percent(self, value: Any) -> float | None:
+        """Parse numeric percent-like values into floats."""
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            normalized = value.strip().rstrip("%")
+            if not normalized:
+                return None
+            try:
+                return float(normalized)
+            except ValueError:
+                return None
+        return None
 
     def _has_material_conflict(self, observations: list[str]) -> bool:
         """Detect obvious cross-analyst disagreement from observation strings."""

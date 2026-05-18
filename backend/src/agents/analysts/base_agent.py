@@ -9,7 +9,7 @@ from typing import Any, Protocol, TypedDict
 from ...knowledge.repository import DatasetName
 from ...llm.client import LLMClient, LLMRunnable, ensure_llm_client
 from ...tools.analyst.tooling import AnalystToolRegistry, ToolCallRequest, ToolCallResult
-from ...services.analysts.graph_service import KnowledgeBackedAnalystService
+from ...services.analysts.base_service import KnowledgeBackedAnalystService
 
 
 @dataclass(slots=True)

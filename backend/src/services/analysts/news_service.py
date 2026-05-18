@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from .graph_service import KnowledgeBackedAnalystService
+from .base_service import KnowledgeBackedAnalystService
 
 
 class NewsAnalystService(KnowledgeBackedAnalystService):
