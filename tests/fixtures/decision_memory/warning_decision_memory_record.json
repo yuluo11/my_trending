@@ -1,0 +1,27 @@
+{
+  "text": "A short external reference favored caution around an event-driven setup and argued that price extension reduced immediate reward relative to risk.",
+  "metadata": {
+    "source": "",
+    "source_type": "external",
+    "title": "Warning Decision Memory Case",
+    "category": "decision_memory",
+    "memory_type": "decision_case",
+    "subject": "External cautionary setup",
+    "topic": "decision-memory",
+    "recommendation": "keep_watch",
+    "confidence": "medium",
+    "market_regime": "event_driven",
+    "analyst_alignment": "mixed",
+    "signal_tags": [
+      "news_catalyst"
+    ],
+    "risk_tags": [
+      "valuation_risk"
+    ],
+    "timing_tags": [
+      "event_window"
+    ],
+    "quality_score": 0.6,
+    "dataset": "dynamic"
+  }
+}

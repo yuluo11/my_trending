@@ -1,6 +1,6 @@
 """Market analyst service backed by the shared knowledge layer."""
 
-from .graph_service import KnowledgeBackedAnalystService
+from .base_service import KnowledgeBackedAnalystService
 
 
 class MarketAnalystService(KnowledgeBackedAnalystService):

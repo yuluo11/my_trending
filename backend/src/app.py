@@ -431,6 +431,7 @@ def run_analyst_realization(
 def run_decision_advisory(
     *,
     analyst_payload: dict[str, Any],
+    portfolio_context: dict[str, Any] | None = None,
     datasets: tuple[DatasetName, ...] | None = None,
     metadata_filter: dict[str, Any] | None = None,
     max_documents: int | None = None,
@@ -440,6 +441,7 @@ def run_decision_advisory(
     """Run the decision advisory agent over an analyst orchestration payload."""
     task = DecisionTask.from_analyst_payload(
         analyst_payload,
+        portfolio_context=portfolio_context,
         datasets=datasets,
         metadata_filter=metadata_filter,
         max_documents=max_documents,
@@ -454,6 +456,7 @@ def run_decision_realization(
     symbol: str | None = None,
     trade_date: str | None = None,
     extra_context: str | None = None,
+    portfolio_context: dict[str, Any] | None = None,
     analyst_datasets: tuple[DatasetName, ...] | None = None,
     analyst_metadata_filter: dict[str, Any] | None = None,
     analyst_max_documents: int | None = None,
@@ -477,6 +480,7 @@ def run_decision_realization(
     )
     decision_payload = run_decision_advisory(
         analyst_payload=analyst_payload,
+        portfolio_context=portfolio_context,
         datasets=decision_datasets,
         metadata_filter=decision_metadata_filter,
         max_documents=decision_max_documents,
@@ -487,6 +491,7 @@ def run_decision_realization(
         "subject": subject,
         "symbol": symbol,
         "trade_date": trade_date,
+        "portfolio_context": portfolio_context,
         "analyst": analyst_payload,
         "decision": decision_payload,
     }
