@@ -1,8 +1,0 @@
-{
-  "name": "local_test_index",
-  "datasets": [
-    "foundation",
-    "dynamic"
-  ],
-  "document_count": 2
-}
