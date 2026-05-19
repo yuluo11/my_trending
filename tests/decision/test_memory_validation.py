@@ -13,9 +13,12 @@ from backend.src.services.decision.memory import (
 )
 
 
-FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "decision_memory"
+TESTS_DIR = Path(__file__).resolve().parent.parent
+PROJECT_ROOT_DIR = TESTS_DIR.parent
+
+FIXTURES_DIR = TESTS_DIR / "fixtures" / "decision_memory"
 DATA_DIR = (
-    Path(__file__).resolve().parent.parent
+    PROJECT_ROOT_DIR
     / "backend"
     / "data"
     / "dynamic"
