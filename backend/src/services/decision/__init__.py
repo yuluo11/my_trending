@@ -6,5 +6,13 @@ separate for debugging and review.
 """
 
 from .memory import DecisionKnowledgeService
+from .observation_service import (
+    DecisionGuidanceObservationAnalyticsService,
+    DecisionGuidanceObservationService,
+)
 
-__all__ = ["DecisionKnowledgeService"]
+__all__ = [
+    "DecisionGuidanceObservationAnalyticsService",
+    "DecisionGuidanceObservationService",
+    "DecisionKnowledgeService",
+]

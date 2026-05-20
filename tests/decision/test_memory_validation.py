@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from backend.src.agents.decision.base_agent import DecisionTask
+from backend.src.knowledge.repository import KnowledgeRepository
+from backend.src.services.decision import DecisionGuidanceObservationService
 from backend.src.services.decision.memory import (
     DecisionKnowledgeService,
     summarize_decision_memory_validation,
@@ -266,6 +269,232 @@ class DecisionMemoryValidationTests(unittest.TestCase):
             "shared portfolio state tags",
             " ".join(near_limit_context["documents"][0]["match_reasons"]),
         )
+
+    def test_postmortem_lessons_are_extracted_into_decision_context(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repository = KnowledgeRepository(data_root=Path(tmpdir))
+            observation_service = DecisionGuidanceObservationService(repository=repository)
+            observation_service.persist_guidance_observation(
+                {
+                    "subject": "NVIDIA momentum rebound review",
+                    "symbol": "NVDA",
+                    "trade_date": "2026-05-19",
+                    "decision_summary": "Watch the rebound until confirmation improves.",
+                    "recommendation": "keep_watch",
+                    "confidence": "medium",
+                    "rationale": "A prior postmortem argued for stronger confirmation.",
+                    "case_fit_assessment": "Partial fit to a failed rebound lesson.",
+                    "reference_cases": [{"title": "Momentum Rebound Postmortem"}],
+                    "applied_postmortem_guidance": [
+                        "Require stronger confirmation before adding to an extended move."
+                    ],
+                }
+            )
+
+            postmortem_record = {
+                "text": (
+                    "Reflection summary: A prior momentum setup partially worked but became too dependent "
+                    "on immediate follow-through.\n\n"
+                    "Reusable lessons:\n"
+                    "- Require stronger confirmation before adding to an extended move.\n"
+                    "- Treat failed rebound persistence as a reason to lower confidence.\n\n"
+                    "Future adjustments:\n"
+                    "- Compare current setups against failed rebound postmortems before upgrading conviction.\n"
+                ),
+                "metadata": {
+                    "source": "reflection_postmortem",
+                    "source_type": "internal",
+                    "title": "Momentum Rebound Postmortem",
+                    "created_at": "2026-05-18T10:00:00+08:00",
+                    "updated_at": "2026-05-18T10:00:00+08:00",
+                    "category": "decision_memory",
+                    "memory_type": "decision_postmortem",
+                    "tags": ["momentum", "postmortem"],
+                    "symbol": "NVDA",
+                    "subject": "NVIDIA momentum rebound review",
+                    "topic": "decision-memory",
+                    "recommendation": "keep_watch",
+                    "confidence": "medium",
+                    "market_regime": "event_driven",
+                    "analyst_alignment": "mixed",
+                    "signal_tags": ["momentum"],
+                    "risk_tags": ["event_fade"],
+                    "timing_tags": ["short_term"],
+                    "portfolio_state_tags": ["existing_position"],
+                    "outcome_label": "mixed",
+                    "quality_score": 0.85,
+                    "dataset": "dynamic",
+                },
+            }
+            retriever = FakeRetriever(
+                [
+                    FakeDocument(postmortem_record["text"], postmortem_record["metadata"]),
+                ]
+            )
+            service = DecisionKnowledgeService(
+                repository=repository,
+                retriever=retriever,
+                backend=object(),
+            )
+            task = DecisionTask(
+                subject="NVIDIA momentum rebound review",
+                symbol="NVDA",
+                overall_summary="Catalyst stayed active but the rebound looked fragile.",
+                overall_confidence="medium",
+                key_signals=["momentum is still active"],
+                portfolio_risks=["event fade risk is rising"],
+                cross_analyst_observations=["Signals are constructive but timing looks stretched"],
+                portfolio_context={
+                    "cash_pct": 9,
+                    "positions": [{"symbol": "NVDA", "weight_pct": 6.0}],
+                },
+            )
+
+            context = service.analyze(task)
+
+            self.assertEqual(1, context["document_count"])
+            self.assertTrue(context["postmortem_lessons"])
+            self.assertTrue(
+                any(
+                    "stronger confirmation" in item["lesson"].lower()
+                    for item in context["postmortem_lessons"]
+                )
+            )
+            self.assertEqual("NVDA", context["guidance_priors"]["symbol"])
+            self.assertEqual(1, context["guidance_priors"]["total_observations"])
+            self.assertTrue(context["guidance_priors"]["top_guidance"])
+            self.assertIn("stronger confirmation", context["guidance_priors"]["summary"].lower())
+
+    def test_guidance_priors_lightly_boost_aligned_documents_in_retrieval(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            repository = KnowledgeRepository(data_root=Path(tmpdir))
+            observation_service = DecisionGuidanceObservationService(repository=repository)
+            observation_service.persist_guidance_observation(
+                {
+                    "subject": "NVIDIA momentum rebound review",
+                    "symbol": "NVDA",
+                    "trade_date": "2026-05-19",
+                    "decision_summary": "Watch the rebound until confirmation improves.",
+                    "recommendation": "keep_watch",
+                    "confidence": "medium",
+                    "rationale": "A prior postmortem argued for stronger confirmation.",
+                    "case_fit_assessment": "Partial fit to a failed rebound lesson.",
+                    "reference_cases": [{"title": "Momentum Rebound Postmortem"}],
+                    "applied_postmortem_guidance": [
+                        "Require stronger confirmation before adding to an extended move."
+                    ],
+                }
+            )
+            observation_service.persist_guidance_observation(
+                {
+                    "subject": "NVIDIA momentum rebound follow-up",
+                    "symbol": "NVDA",
+                    "trade_date": "2026-05-20",
+                    "decision_summary": "Stay patient until confirmation improves.",
+                    "recommendation": "keep_watch",
+                    "confidence": "medium",
+                    "rationale": "The same lesson remains active.",
+                    "case_fit_assessment": "The rebound still looks extended.",
+                    "reference_cases": [{"title": "Momentum Rebound Postmortem"}],
+                    "applied_postmortem_guidance": [
+                        "Require stronger confirmation before adding to an extended move."
+                    ],
+                }
+            )
+
+            aligned_record = {
+                "text": (
+                    "This postmortem emphasized requiring stronger confirmation before adding to "
+                    "an extended move after a fragile rebound."
+                ),
+                "metadata": {
+                    "source": "reflection_postmortem",
+                    "source_type": "internal",
+                    "title": "Aligned Guidance Postmortem",
+                    "created_at": "2026-05-18T10:00:00+08:00",
+                    "updated_at": "2026-05-18T10:00:00+08:00",
+                    "category": "decision_memory",
+                    "memory_type": "decision_postmortem",
+                    "tags": ["momentum", "extended"],
+                    "symbol": "NVDA",
+                    "subject": "NVIDIA momentum rebound review",
+                    "topic": "decision-memory",
+                    "recommendation": "keep_watch",
+                    "confidence": "medium",
+                    "market_regime": "event_driven",
+                    "analyst_alignment": "mixed",
+                    "signal_tags": ["momentum"],
+                    "risk_tags": ["event_fade"],
+                    "timing_tags": ["short_term"],
+                    "portfolio_state_tags": ["existing_position"],
+                    "outcome_label": "mixed",
+                    "quality_score": 0.85,
+                    "dataset": "dynamic",
+                },
+            }
+            less_aligned_record = {
+                "text": (
+                    "This postmortem focused more on valuation risk and sector rotation than on "
+                    "confirmation quality."
+                ),
+                "metadata": {
+                    "source": "reflection_postmortem",
+                    "source_type": "internal",
+                    "title": "Less Aligned Guidance Postmortem",
+                    "created_at": "2026-05-17T10:00:00+08:00",
+                    "updated_at": "2026-05-17T10:00:00+08:00",
+                    "category": "decision_memory",
+                    "memory_type": "decision_postmortem",
+                    "tags": ["valuation", "rotation"],
+                    "symbol": "NVDA",
+                    "subject": "NVIDIA momentum rebound review",
+                    "topic": "decision-memory",
+                    "recommendation": "keep_watch",
+                    "confidence": "medium",
+                    "market_regime": "event_driven",
+                    "analyst_alignment": "mixed",
+                    "signal_tags": ["momentum"],
+                    "risk_tags": ["event_fade"],
+                    "timing_tags": ["short_term"],
+                    "portfolio_state_tags": ["existing_position"],
+                    "outcome_label": "mixed",
+                    "quality_score": 0.85,
+                    "dataset": "dynamic",
+                },
+            }
+
+            retriever = FakeRetriever(
+                [
+                    FakeDocument(less_aligned_record["text"], less_aligned_record["metadata"]),
+                    FakeDocument(aligned_record["text"], aligned_record["metadata"]),
+                ]
+            )
+            service = DecisionKnowledgeService(
+                repository=repository,
+                retriever=retriever,
+                backend=object(),
+            )
+            task = DecisionTask(
+                subject="NVIDIA momentum rebound review",
+                symbol="NVDA",
+                overall_summary="Catalyst stayed active but the rebound looked fragile.",
+                overall_confidence="medium",
+                key_signals=["momentum is still active"],
+                portfolio_risks=["event fade risk is rising"],
+                cross_analyst_observations=["Signals are constructive but timing looks stretched"],
+                portfolio_context={
+                    "cash_pct": 9,
+                    "positions": [{"symbol": "NVDA", "weight_pct": 6.0}],
+                },
+            )
+
+            context = service.analyze(task)
+
+            self.assertEqual("Aligned Guidance Postmortem", context["documents"][0]["title"])
+            self.assertIn(
+                "aligned with recurring guidance priors for this symbol",
+                context["documents"][0]["match_reasons"],
+            )
 
 
 if __name__ == "__main__":

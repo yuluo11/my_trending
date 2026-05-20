@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ....knowledge.indexing import KnowledgeIndexer
 from ....knowledge.repository import DatasetName, KnowledgeRepository
 from ....knowledge.retriever import KnowledgeRetriever, VectorRetrieverBackend
+from ..observation_service import DecisionGuidanceObservationAnalyticsService
 from .schema import (
     normalize_decision_memory_metadata,
     summarize_decision_memory_validation,
@@ -31,11 +32,15 @@ class DecisionKnowledgeService:
         repository: KnowledgeRepository | None = None,
         retriever: KnowledgeRetriever | None = None,
         backend: VectorRetrieverBackend | None = None,
+        observation_analytics: DecisionGuidanceObservationAnalyticsService | None = None,
     ) -> None:
         self.repository = repository or KnowledgeRepository()
         self.indexer = KnowledgeIndexer(self.repository)
         resolved_backend = backend or self.indexer.build_local_index(self.default_datasets)
         self.retriever = retriever or KnowledgeRetriever(self.repository, backend=resolved_backend)
+        self.observation_analytics = observation_analytics or DecisionGuidanceObservationAnalyticsService(
+            self.repository
+        )
 
     def default_metadata_filter(self) -> dict[str, Any]:
         """Restrict retrieval to decision-memory records by default."""
@@ -131,6 +136,7 @@ class DecisionKnowledgeService:
         *,
         query: str,
         scenario_profile: dict[str, Any],
+        guidance_priors: dict[str, Any] | None = None,
         datasets: tuple[DatasetName, ...] | None = None,
         metadata_filter: dict[str, Any] | None = None,
         k: int | None = None,
@@ -169,6 +175,7 @@ class DecisionKnowledgeService:
                 document,
                 query=query,
                 scenario_profile=scenario_profile,
+                guidance_priors=guidance_priors or {},
                 task=task,
                 validation=validation,
             )
@@ -199,10 +206,12 @@ class DecisionKnowledgeService:
         selected_datasets = datasets or self.default_datasets
         query = self.build_query(task)
         scenario_profile = self.build_scenario_profile(task)
+        guidance_priors = self.collect_guidance_priors(task, datasets=selected_datasets)
         retrieval_context = self.retrieve_context(
             task,
             query=query,
             scenario_profile=scenario_profile,
+            guidance_priors=guidance_priors,
             datasets=selected_datasets,
             metadata_filter=metadata_filter,
             k=k,
@@ -214,6 +223,7 @@ class DecisionKnowledgeService:
             datasets=selected_datasets,
             ranked_documents=retrieval_context["ranked_documents"],
             validation_summary=retrieval_context["validation_summary"],
+            guidance_priors=guidance_priors,
         )
 
     def build_context(
@@ -225,6 +235,7 @@ class DecisionKnowledgeService:
         datasets: tuple[DatasetName, ...],
         ranked_documents: list[dict[str, Any]],
         validation_summary: dict[str, Any],
+        guidance_priors: dict[str, Any],
     ) -> dict[str, Any]:
         """Build an agent-friendly context payload from retrieved decision records."""
         serialized_documents = [self.serialize_document(item) for item in ranked_documents]
@@ -240,6 +251,8 @@ class DecisionKnowledgeService:
             "validation_summary": validation_summary,
             "documents": serialized_documents,
             "evidence": self.collect_evidence(serialized_documents),
+            "postmortem_lessons": self.collect_postmortem_lessons(serialized_documents),
+            "guidance_priors": guidance_priors,
         }
 
     def serialize_document(self, ranked_document: dict[str, Any]) -> dict[str, Any]:
@@ -273,6 +286,48 @@ class DecisionKnowledgeService:
                 }
             )
         return evidence
+
+    def collect_postmortem_lessons(self, documents: list[dict[str, Any]]) -> list[dict[str, str]]:
+        """Extract reusable lesson snippets from retrieved postmortem memories."""
+        lessons: list[dict[str, str]] = []
+        for document in documents:
+            metadata = dict(document.get("metadata", {}))
+            memory_type = str(metadata.get("memory_type", "")).strip().lower()
+            if memory_type != "decision_postmortem":
+                continue
+            for lesson in self._extract_postmortem_sections(document):
+                lessons.append(
+                    {
+                        "title": str(document.get("title", "")).strip() or "Untitled postmortem",
+                        "fit": str(document.get("fit", metadata.get("fit", "medium"))).strip().lower()
+                        or "medium",
+                        "lesson": lesson,
+                    }
+                )
+        return lessons[:4]
+
+    def collect_guidance_priors(
+        self,
+        task: "DecisionTask",
+        *,
+        datasets: tuple[DatasetName, ...],
+    ) -> dict[str, Any]:
+        """Summarize recurring guidance usage for the current symbol as bounded priors."""
+        if not task.symbol:
+            return {
+                "datasets": list(datasets),
+                "symbol": None,
+                "total_observations": 0,
+                "top_guidance": [],
+                "recommendation_breakdown": [],
+                "top_reference_cases": [],
+                "summary": "",
+            }
+        return self.observation_analytics.summarize_guidance_priors(
+            datasets=datasets,
+            symbol=task.symbol,
+            top_n=3,
+        )
 
     def build_excerpt(self, text: str, *, limit: int = 280) -> str:
         """Return a compact evidence excerpt suitable for prompts."""
@@ -375,6 +430,7 @@ class DecisionKnowledgeService:
         *,
         query: str,
         scenario_profile: dict[str, Any],
+        guidance_priors: dict[str, Any],
         task: "DecisionTask",
         validation: dict[str, Any],
     ) -> dict[str, Any]:
@@ -465,6 +521,19 @@ class DecisionKnowledgeService:
         if outcome_label == "worked":
             score += 0.5
 
+        memory_type = str(metadata.get("memory_type", "")).strip().lower()
+        if memory_type == "decision_postmortem":
+            score += 0.75
+            match_reasons.append("postmortem memory with reusable review lessons")
+
+        guidance_alignment_score = self._guidance_prior_alignment_score(
+            document=document,
+            guidance_priors=guidance_priors,
+        )
+        if guidance_alignment_score > 0:
+            score += guidance_alignment_score
+            match_reasons.append("aligned with recurring guidance priors for this symbol")
+
         metadata_quality = self._safe_float(metadata.get("quality_score")) or 0.0
         score += min(metadata_quality, 1.0) * 2.0
 
@@ -537,6 +606,50 @@ class DecisionKnowledgeService:
         haystack_terms = set(self._tokenize(haystack))
         return float(min(sum(1 for term in query_terms if term in haystack_terms), 4))
 
+    def _guidance_prior_alignment_score(
+        self,
+        *,
+        document: Any,
+        guidance_priors: dict[str, Any],
+    ) -> float:
+        """Apply a small boost when a document aligns with recurring guidance priors."""
+        top_guidance = guidance_priors.get("top_guidance", [])
+        if not isinstance(top_guidance, list) or not top_guidance:
+            return 0.0
+
+        metadata = dict(getattr(document, "metadata", {}))
+        haystack = " ".join(
+            [
+                getattr(document, "page_content", ""),
+                str(metadata.get("title", "")),
+                str(metadata.get("subject", "")),
+                " ".join(str(tag) for tag in metadata.get("tags", [])),
+                " ".join(str(tag) for tag in metadata.get("signal_tags", [])),
+                " ".join(str(tag) for tag in metadata.get("risk_tags", [])),
+            ]
+        ).lower()
+        haystack_terms = set(self._tokenize(haystack))
+
+        overlap_count = 0
+        for item in top_guidance[:2]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label", "")).strip().lower()
+            if not label:
+                continue
+            guidance_terms = {
+                term
+                for term in self._tokenize(label)
+                if len(term) > 4 and term not in {"before", "after", "prior", "decisions"}
+            }
+            overlap_count += sum(1 for term in guidance_terms if term in haystack_terms)
+
+        if overlap_count >= 4:
+            return 1.5
+        if overlap_count >= 2:
+            return 0.75
+        return 0.0
+
     def _metadata_overlap(
         self,
         target_tags: list[str],
@@ -571,6 +684,25 @@ class DecisionKnowledgeService:
     def _tokenize(self, text: str) -> list[str]:
         """Tokenize text into lowercase alphanumeric terms."""
         return re.findall(r"[a-z0-9_+-]+", text.lower())
+
+    def _extract_postmortem_sections(self, document: dict[str, Any]) -> list[str]:
+        """Extract lesson-like bullet points from a serialized postmortem document."""
+        text = str(document.get("text", "")).strip()
+        if not text:
+            return []
+
+        sections: list[str] = []
+        for heading in ("Reusable lessons:", "Future adjustments:"):
+            pattern = rf"{re.escape(heading)}\n((?:- .+\n?){{1,6}})"
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            block = match.group(1)
+            for line in block.splitlines():
+                normalized = line.removeprefix("- ").strip()
+                if normalized:
+                    sections.append(normalized)
+        return sections[:3]
 
     def _matches_metadata_filter(
         self,

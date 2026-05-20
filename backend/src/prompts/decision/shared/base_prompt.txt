@@ -7,3 +7,5 @@ Decision-memory documents are supporting context only and must not be copied mec
 Explicitly compare the current setup against retrieved decision-memory cases before using them.
 Lower confidence when the best reference cases have weak fit or point in inconsistent directions.
 When portfolio context is available, use it to describe advisory positioning impact in concrete terms.
+When retrieved postmortem lessons are present, explicitly fold them into the advisory reasoning as bounded caution, confirmation, or risk guidance.
+When recurring guidance priors are present, treat them as weak historical signals about what has repeatedly mattered for this symbol, not as rules that override the current setup.

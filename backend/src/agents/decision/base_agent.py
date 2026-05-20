@@ -273,10 +273,16 @@ class BaseDecisionAgent:
                 "Return a JSON object with keys: decision_summary, recommendation, "
                 "portfolio_context_used, portfolio_context_summary, position_impact, "
                 "timing_decision, action_conditions, no_action_reasons, aggregated_risks, "
-                "rationale, confidence, reference_cases, and case_fit_assessment. This is "
-                "advisory only and must not imply trade execution. Use portfolio context when it "
-                "is provided, and use scenario fit, not just raw similarity, when discussing "
-                "reference cases."
+                "rationale, confidence, reference_cases, case_fit_assessment, and "
+                "applied_postmortem_guidance. This is advisory only and must not imply trade "
+                "execution. Use portfolio context when it is provided, use scenario fit rather "
+                "than raw similarity when discussing reference cases, and incorporate any "
+                "retrieved postmortem lessons as bounded future-risk guidance rather than as "
+                "instructions to copy. Treat recurring guidance priors as weak experience "
+                "signals, not hard rules. When postmortem lessons or recurring guidance priors "
+                "are relevant, mention the most important one explicitly in the rationale, "
+                "no_action_reasons, or action_conditions, and also return it in "
+                "applied_postmortem_guidance."
             ),
         }
 
@@ -304,6 +310,8 @@ class BaseDecisionAgent:
             "validation_summary": decision_context.get("validation_summary", {}),
             "documents": decision_context.get("documents", []),
             "evidence": decision_context.get("evidence", []),
+            "postmortem_lessons": decision_context.get("postmortem_lessons", []),
+            "guidance_priors": decision_context.get("guidance_priors", {}),
         }
 
     def invoke(self, task: DecisionTask) -> dict[str, Any]:
@@ -360,6 +368,19 @@ class BaseDecisionAgent:
         timing_decision = self._fallback_timing_decision(task, recommendation)
         action_conditions = self._fallback_action_conditions(task, recommendation)
         no_action_reasons = self._fallback_no_action_reasons(task, recommendation)
+        postmortem_lessons = self._fallback_postmortem_lessons(decision_context)
+        recurring_guidance = self._fallback_guidance_priors(decision_context)
+        confidence, confidence_note = self._fallback_confidence(
+            task,
+            decision_context=decision_context,
+            recommendation=recommendation,
+        )
+        applied_postmortem_guidance = list(postmortem_lessons[:2])
+        for guidance in recurring_guidance:
+            if guidance not in applied_postmortem_guidance:
+                applied_postmortem_guidance.append(guidance)
+            if len(applied_postmortem_guidance) >= 2:
+                break
 
         decision_summary = (
             f"Current analyst evidence for {task.subject} supports a {recommendation} stance."
@@ -367,8 +388,10 @@ class BaseDecisionAgent:
         portfolio_context_summary = self.summarize_portfolio_context(task.portfolio_context)
         rationale_parts = [
             f"The decision layer reviewed {len(task.analyst_results)} analyst perspective(s).",
-            f"Overall analyst confidence is {self._normalize_confidence(task.overall_confidence)}.",
+            f"Overall decision confidence is {confidence}.",
         ]
+        if confidence_note:
+            rationale_parts.append(confidence_note)
         if portfolio_context_summary:
             rationale_parts.append(f"Portfolio context considered: {portfolio_context_summary}.")
         if task.key_signals:
@@ -377,6 +400,30 @@ class BaseDecisionAgent:
             rationale_parts.append(
                 f"Referenced {len(reference_cases)} decision-memory case(s) as supporting context."
             )
+        if postmortem_lessons:
+            rationale_parts.append(
+                f"Relevant postmortem lesson: {postmortem_lessons[0]}"
+            )
+            if recommendation in {"keep_watch", "hold", "no_trade"}:
+                no_action_reasons.append(
+                    f"Relevant postmortem lesson: {postmortem_lessons[0]}"
+                )
+            else:
+                action_conditions.append(
+                    f"Respect the retrieved postmortem lesson: {postmortem_lessons[0]}"
+                )
+        if recurring_guidance:
+            rationale_parts.append(
+                f"Recurring guidance prior: {recurring_guidance[0]}"
+            )
+            if recommendation in {"keep_watch", "hold", "no_trade"}:
+                no_action_reasons.append(
+                    f"Recurring guidance prior: {recurring_guidance[0]}"
+                )
+            else:
+                action_conditions.append(
+                    f"Respect the recurring guidance prior: {recurring_guidance[0]}"
+                )
         rationale = " ".join(rationale_parts)
 
         case_fit_assessment = self._fallback_case_fit_assessment(reference_cases)
@@ -395,9 +442,10 @@ class BaseDecisionAgent:
             "no_action_reasons": no_action_reasons,
             "aggregated_risks": aggregated_risks,
             "rationale": rationale,
-            "confidence": self._normalize_confidence(task.overall_confidence),
+            "confidence": confidence,
             "reference_cases": reference_cases,
             "case_fit_assessment": case_fit_assessment,
+            "applied_postmortem_guidance": applied_postmortem_guidance,
             "prompt": prompt,
             "decision_context": decision_context,
         }
@@ -467,6 +515,10 @@ class BaseDecisionAgent:
                 llm_result.get("case_fit_assessment", fallback_result["case_fit_assessment"])
             ).strip()
             or fallback_result["case_fit_assessment"],
+            "applied_postmortem_guidance": self._normalize_string_list(
+                llm_result.get("applied_postmortem_guidance"),
+                fallback=fallback_result["applied_postmortem_guidance"],
+            ),
             "prompt": prompt,
             "decision_context": decision_context,
             "raw_model_output": llm_result,
@@ -495,6 +547,7 @@ class BaseDecisionAgent:
                 }
             ],
             "case_fit_assessment": "string",
+            "applied_postmortem_guidance": ["string"],
         }
 
     def build_agent_message(self, result: dict[str, Any]) -> Any:
@@ -715,6 +768,43 @@ class BaseDecisionAgent:
             )
         return reference_cases
 
+    def _fallback_postmortem_lessons(
+        self,
+        decision_context: dict[str, Any],
+    ) -> list[str]:
+        """Return compact lesson strings extracted from retrieved postmortem memories."""
+        lessons: list[str] = []
+        for item in decision_context.get("postmortem_lessons", [])[:3]:
+            if not isinstance(item, dict):
+                continue
+            lesson = str(item.get("lesson", "")).strip()
+            if lesson:
+                lessons.append(lesson)
+        return lessons
+
+    def _fallback_guidance_priors(
+        self,
+        decision_context: dict[str, Any],
+    ) -> list[str]:
+        """Return recurring guidance strings from historical guidance observations."""
+        priors = dict(decision_context.get("guidance_priors", {}))
+        guidance_items = priors.get("top_guidance", [])
+        if not isinstance(guidance_items, list):
+            return []
+        lessons: list[str] = []
+        for item in guidance_items[:2]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label", "")).strip()
+            count = int(item.get("count", 0) or 0)
+            if not label:
+                continue
+            if count > 1:
+                lessons.append(f"{label} (seen {count} times in prior decisions)")
+            else:
+                lessons.append(label)
+        return lessons
+
     def _fallback_case_fit_assessment(
         self,
         reference_cases: list[dict[str, str]],
@@ -741,6 +831,52 @@ class BaseDecisionAgent:
             "The retrieved reference cases have weak scenario fit, so they mainly serve as a "
             "confidence check rather than a directional guide."
         )
+
+    def _fallback_confidence(
+        self,
+        task: DecisionTask,
+        *,
+        decision_context: dict[str, Any],
+        recommendation: str,
+    ) -> tuple[str, str]:
+        """Apply bounded confidence adjustments using recurring guidance priors."""
+        base_confidence = self._normalize_confidence(task.overall_confidence)
+        priors = dict(decision_context.get("guidance_priors", {}))
+        total_observations = int(priors.get("total_observations", 0) or 0)
+        if total_observations < 2:
+            return base_confidence, ""
+
+        recommendation_breakdown = priors.get("recommendation_breakdown", [])
+        if not isinstance(recommendation_breakdown, list) or not recommendation_breakdown:
+            return base_confidence, ""
+
+        dominant_item = recommendation_breakdown[0]
+        if not isinstance(dominant_item, dict):
+            return base_confidence, ""
+
+        dominant_recommendation = str(dominant_item.get("label", "")).strip().lower()
+        dominant_count = int(dominant_item.get("count", 0) or 0)
+        if dominant_count < 2:
+            return base_confidence, ""
+
+        if not self._is_confidence_conflict(
+            recommendation=recommendation,
+            dominant_recommendation=dominant_recommendation,
+        ):
+            return base_confidence, ""
+
+        adjusted_confidence = self._downgrade_confidence(base_confidence)
+        if adjusted_confidence == base_confidence:
+            return base_confidence, ""
+
+        symbol = str(priors.get("symbol") or task.symbol or "").strip().upper()
+        symbol_prefix = f"For {symbol}, " if symbol else ""
+        note = (
+            f"{symbol_prefix}recurring guidance has more often accompanied "
+            f"{dominant_recommendation} decisions ({dominant_count} observations), so "
+            f"confidence stays one step lower."
+        )
+        return adjusted_confidence, note
 
     def _normalize_string_list(self, value: Any, *, fallback: list[str]) -> list[str]:
         """Normalize a model value into a non-empty list of strings."""
@@ -792,6 +928,27 @@ class BaseDecisionAgent:
         if confidence not in ALLOWED_CONFIDENCE:
             return "low"
         return confidence
+
+    def _downgrade_confidence(self, confidence: str) -> str:
+        """Lower confidence by one step while staying within the supported set."""
+        if confidence == "high":
+            return "medium"
+        if confidence == "medium":
+            return "low"
+        return "low"
+
+    def _is_confidence_conflict(
+        self,
+        *,
+        recommendation: str,
+        dominant_recommendation: str,
+    ) -> bool:
+        """Return whether recurring recommendation history conflicts with the current stance."""
+        if recommendation == "consider_buy":
+            return dominant_recommendation in {"keep_watch", "hold", "no_trade", "consider_reduce"}
+        if recommendation == "consider_reduce":
+            return dominant_recommendation in {"consider_buy", "hold"}
+        return False
 
     def summarize_portfolio_context(self, portfolio_context: dict[str, Any] | None) -> str:
         """Summarize portfolio inputs into a compact prompt/debug string."""
